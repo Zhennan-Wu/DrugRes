@@ -1,0 +1,25 @@
+# Ignore Python compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore virtual environments
+venv/
+.env/
+
+# Ignore data files
+*.csv
+*.h5
+*.pkl
+*.pt
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore large logs
+logs/
+*.log
+
+# Ignore directories
+data/
