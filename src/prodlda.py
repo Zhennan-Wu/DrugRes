@@ -146,9 +146,9 @@ def plot_word_cloud(b, ax, v, n):
 if __name__ == "__main__":
     display = True
     sample_size = 10000
-    docs = torch.load("response_{}.pt".format(sample_size))
-    labels_tensor = torch.load("labels_{}.pt".format(sample_size))
-    vocab = pd.read_pickle("vocab_{}.pkl".format(sample_size))
+    docs = torch.load("../data/response_{}.pt".format(sample_size))
+    labels_tensor = torch.load("../data/labels_{}.pt".format(sample_size))
+    vocab = pd.read_pickle("../vocab_{}.pkl".format(sample_size))
 
     # setting global variables
     seed = 0
@@ -293,7 +293,7 @@ if __name__ == "__main__":
         plt.title("Training Loss Curve")
         plt.legend()
         plt.grid()
-        plt.savefig("training_loss.png")  
+        plt.savefig("../plts/training_loss.png")  
         plt.close()    
 
     if not smoke_test:
@@ -307,5 +307,5 @@ if __name__ == "__main__":
         if (display):
             plt.show()
         else:
-            plt.savefig("word_cloud.png")
+            plt.savefig("../plts/word_cloud.png")
             plt.close()
