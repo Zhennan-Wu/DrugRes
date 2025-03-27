@@ -8,11 +8,15 @@ __pycache__/
 venv/
 .env/
 
+# Ignore model file
+*.nemo
+
 # Ignore data files
 *.csv
 *.h5
 *.pkl
 *.pt
+*.tab
 
 # Ignore Jupyter Notebook checkpoints
 .ipynb_checkpoints/
@@ -23,3 +27,4 @@ logs/
 
 # Ignore directories
 data/
+model/
