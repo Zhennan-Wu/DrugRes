@@ -8,9 +8,59 @@ import pandas as pd
 
 
 from pyro.distributions import Categorical
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, TensorDataset, DataLoader
 from typing import Any, Union, List, Tuple, Dict
-   
+
+
+def binarize(x, thres=0.5):
+    return (x > thres)
+
+
+def clip_gradients(gradients, max_norm):
+    norm = np.linalg.norm(gradients)
+    if norm > max_norm:
+        gradients = gradients * (max_norm / norm)
+    return gradients
+
+
+def create_dataloader(X, y=None, batch_size=64, shuffle=True):
+    """
+    Create a PyTorch DataLoader from NumPy arrays.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Features array of shape (n_samples, n_features)
+
+    y : np.ndarray or None
+        Labels array of shape (n_samples,) or (n_samples, n_outputs). Optional.
+
+    batch_size : int
+        Size of each batch in the DataLoader.
+
+    shuffle : bool
+        Whether to shuffle the data.
+
+    Returns
+    -------
+    DataLoader
+    """
+    if not torch.is_tensor(X):
+        X_tensor = torch.from_numpy(X).double()
+    else: 
+        X_tensor = X.double()
+    
+    if y is not None:
+        if not torch.is_tensor(y):
+            y_tensor = torch.from_numpy(y).double()
+        else:
+            y_tensor = y.double()
+        dataset = TensorDataset(X_tensor, y_tensor)
+    else:
+        dataset = TensorDataset(X_tensor)
+    
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+
 
 class HDP_DIST_INFO:
     def __init__(self, number_of_subcategories: dict, labels_group_by_categories: dict, latent_distribution_indices: torch.Tensor) -> None:
@@ -436,3 +486,5 @@ class CSVDrugResponseDataset(Dataset):
         features = torch.cat((mutation, morgan_footprint))  # Features (all except last column)
         label = torch.tensor(auc, dtype=torch.float32)  # Last column (AUC)
         return features, label
+    
+

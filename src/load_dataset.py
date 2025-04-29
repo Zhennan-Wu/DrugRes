@@ -6,7 +6,7 @@ import pandas as pd
 import os
 
 class MNIST:
-	def __init__(self, DATASET_DIR='../dataset/MNIST/'):
+	def __init__(self, DATASET_DIR='../data/MNIST/'):
 		self.DATASET_DIR = DATASET_DIR
 
 	def fit_normalizer(self, x):
@@ -22,7 +22,7 @@ class MNIST:
 	def inv_transform_normalizer(self, x):
 		return (x * (self.max - self.min)) + self.min
 
-	def load_dataset(self):
+	def load_dataset(self, binary_status=True):
 		test = pd.read_csv(self.DATASET_DIR+'test.csv')
 		test = test.values
 		train = pd.read_csv(self.DATASET_DIR+'train.csv')
@@ -36,15 +36,16 @@ class MNIST:
 		self.fit_normalizer(train_x)
 		train_x = self.transform_normalizer(train_x)
 		test_x = self.transform_normalizer(test_x)
-		train_x = self.binarize(train_x)
-		test_x = self.binarize(test_x)
+		if (binary_status):
+			train_x = self.binarize(train_x)
+			test_x = self.binarize(test_x)
 
 		train_x, train_y, test_x, test_y = torch.from_numpy(train_x), torch.from_numpy(train_y), torch.from_numpy(test_x), torch.from_numpy(test_y)	
 
 		return train_x, train_y, test_x, test_y
 	
 class CIFAR10:
-	def __init__(self, DATASET_DIR='../dataset/CIFAR10/'):
+	def __init__(self, DATASET_DIR='../data/CIFAR10/'):
 		self.DATASET_DIR = DATASET_DIR
 		self.transform = transforms.Compose(
 			[transforms.ToTensor(),
