@@ -48,7 +48,7 @@ class MixedRBM(BernoulliRBM):
 
     def _sample_visibles(self, h):
         mean = self._mean_visibles(h)
-        g_part = pyro.sample("v", dist.Normal(loc=mean, scale=self.sigma))
+        g_part = pyro.sample("v", dist.Normal(loc=mean*self.sigma, scale=self.sigma))
         b_part = pyro.sample("v", dist.Bernoulli(torch.clamp(mean, 0, 1)))
         samples = b_part.clone()
         samples[:, self.gaussian_indices] = g_part[:, self.gaussian_indices]

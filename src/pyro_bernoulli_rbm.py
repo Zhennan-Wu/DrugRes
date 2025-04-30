@@ -130,7 +130,7 @@ class BernoulliRBM:
 
         return pseudo_likelihood
 
-    def fit(self, X, epochs, verbose=0, learning_rate=None):
+    def fit(self, X, epochs, gaussian_indices=None, verbose=0, learning_rate=None):
         """
         Fit the RBM model to the data.
         
@@ -176,7 +176,7 @@ class BernoulliRBM:
 
         return self
 
-    def batch_fit(self, data_loader, epochs, verbose=0, learning_rate=None):
+    def batch_fit(self, data_loader, epochs, gaussian_indices=None, verbose=0, learning_rate=None):
         """
         Fit the RBM model to the data.
         

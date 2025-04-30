@@ -45,7 +45,7 @@ class GaussianRBM(BernoulliRBM):
     
     def _sample_visibles(self, h):
         mean = self._mean_visibles(h)
-        return pyro.sample("v", dist.Normal(loc=mean, scale=self.sigma))
+        return pyro.sample("v", dist.Normal(loc=mean*self.sigma, scale=self.sigma))
 
     def _free_energy(self, v):
         """Computes the free energy for Gaussian RBM:
