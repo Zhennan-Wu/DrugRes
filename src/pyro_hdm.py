@@ -345,6 +345,7 @@ class HDM:
             nn.ReLU(),
             nn.Linear(64, 2)
         )
+        
     def get_CRP_distribution(self, cats):
         '''
         Parameters:
