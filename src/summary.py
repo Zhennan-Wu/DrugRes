@@ -213,23 +213,23 @@ def print_trainable_params():
 
 
 def generate_hierarchical_mixture_data(
-    N_per_base=50, M=10, V=100,  # N_per_base: number of samples per base category
+    N_per_base=20, M=30, V=100,  # N_per_base: number of samples per base category
     seed=0
 ):
     torch.manual_seed(seed)
 
-    num_super = 6
+    num_super = 2
     num_base_per_super = 3
-    num_components = 10
+    num_components = 6
 
     total_super = num_super
     total_base = num_super * num_base_per_super
     total_data = total_base * N_per_base
 
     # Shared components
-    word_dists = torch.distributions.Dirichlet(0.5 * torch.ones(V)).sample((num_components,))
-    y_means = torch.linspace(-2, 2, steps=num_components)
-    y_stds = 0.3 + 0.5 * torch.rand(num_components)
+    word_dists = torch.distributions.Dirichlet(0.01 * torch.ones(V)).sample((num_components,))
+    y_means = torch.linspace(-3, 3, steps=num_components)
+    y_stds = 0.1 + 0.1 * torch.rand(num_components)
 
     # Create per-base-category mixture weights over the 10 shared components
     base_mixture_weights = torch.distributions.Dirichlet(0.7 * torch.ones(num_components)).sample((total_base,))
@@ -264,5 +264,8 @@ def generate_hierarchical_mixture_data(
         "x": x_data,                  # (total_data, M, V)
         "y": y_data,                  # (total_data,)
         "super_labels": labels_super,  # (total_data,)
-        "base_labels": labels_base    # (total_data,)
+        "base_labels": labels_base,    # (total_data,)
+        "word_dists": word_dists,      # (num_components, V)
+        "mix_weights": base_mixture_weights      # (num_super*num_base_per_super, 
+        
     }
