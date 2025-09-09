@@ -14,6 +14,7 @@ import seaborn as sns
 import umap  
 from functools import reduce
 from tqdm import trange
+# jax.config.update("jax_enable_x64", True)
 
 
 def select_most_diverse(samples: jnp.ndarray, num_select: int = 3):
@@ -491,20 +492,11 @@ def suffix_sum(x: jnp.ndarray) -> jnp.ndarray:
 
 
 @jax.jit
-def normalize_prob(un_normalized, eps=1e-12):
-    cat_prob = un_normalized / (un_normalized.sum(axis=-1, keepdims=True) + eps)
-    # push values away from exactly 0 or 1
-    cat_prob = (cat_prob + eps) / (1 + eps * cat_prob.shape[-1])
-    return cat_prob
-
-
-@jax.jit
 def word_category_conditional(key, word, weight, components):
     gen_dist = dist.Multinomial(total_count=1, probs=components)
     log_probs = gen_dist.log_prob(word)
-    un_normalized = jnp.exp(log_probs) + weight
-
-    cat_prob = normalize_prob(un_normalized)
+    un_normalized = log_probs + jnp.log(weight + 1e-12)
+    cat_prob = jax.nn.softmax(un_normalized, axis=-1)
 
     jax.debug.print("category weight: {}", weight)
     jax.debug.print("likelihood: {}", jnp.exp(log_probs))
@@ -519,8 +511,9 @@ def word_category_conditional(key, word, weight, components):
 def reg_category_conditional(key, score, weight, components):
     reg_dist = dist.Normal(loc=components[0], scale=jnp.sqrt(components[1]))
     log_probs = reg_dist.log_prob(score)
-    un_normalized = jnp.exp(log_probs) + weight
-    cat_prob = normalize_prob(un_normalized)
+    un_normalized = log_probs + jnp.log(weight + 1e-12)
+
+    cat_prob = jax.nn.softmax(un_normalized, axis=-1)
     jax.debug.print("category weight: {}", weight)
     jax.debug.print("likelihood: {}", jnp.exp(log_probs))
     jax.debug.print("posterior prob: {}", cat_prob)
@@ -531,21 +524,50 @@ def reg_category_conditional(key, score, weight, components):
 
 
 @jax.jit
-def doc_categories_conditional(key, cats, nu_doc, nu1, nu2, params0, params1, params2, cluster_prob0, cluster_prob1, C):
+def doc_categories_conditional(key, nu_doc, nu1, nu2, params1, params2, doc_prior, doc_concentrate, cluster_prob0, cluster_prob1, S, C):
     K = 10
-    assert nu1.shape == (K,)
-    assert nu2.shape == (K,)
-    nu_1_log_prob = dist.Beta(params0[0], params0[1]).log_prob(nu1)
+    S = 2
+    C = 3
+    nu_doc = nu_doc[None, None, :]  # (1, 1, K)
+    nu_1_log_prob = dist.Beta(params1[0], params1[1]).log_prob(nu1)
+    print(nu1.shape)
+    print((S, K))
+    assert nu1.shape == (S, K)
+    jax.debug.print("super category stick-breaking log density: {}", nu_1_log_prob)
+    nu_1_log_prob = jnp.sum(nu_1_log_prob, axis=-1)  # (S,)
+    nu_1_log_prob = nu_1_log_prob[None, :] # (1, S)
+    jax.debug.print("super category stick-breaking log density sum: {}", nu_1_log_prob)
     
-    nu_2_log_prob = dist.Beta(params1[0], params1[1]).log_prob(nu2)
-    mu_doc_log_prob = dist.Beta(params2[0], params2[1]).log_prob(nu_doc)
-    cat_log_prob = jnp.log(cluster_prob0[cats[0]]) + jnp.log(cluster_prob1[cats[1]])
-    un_normalized = jnp.exp(nu_1_log_prob + nu_2_log_prob + mu_doc_log_prob + cat_log_prob)
-    prob = normalize_prob(un_normalized)
-    jax.debug.print("super category probability: {}", jnp.exp(nu_1_log_prob))
-    jax.debug.print("base category probability: {}", jnp.exp(nu_2_log_prob))
-    jax.debug.print("document stick-breaking probability: {}", jnp.exp(mu_doc_log_prob))
-    jax.debug.print("category assignment probability: {}", jnp.exp(cat_log_prob))
+    nu_2_log_prob = dist.Beta(params2[0], params2[1]).log_prob(nu2)
+    print(nu2.shape)
+    print((C, S, K))
+    assert nu2.shape == (C, S, K)
+    jax.debug.print("base category stick-breaking log density: {}", nu_2_log_prob)
+    nu_2_log_prob = jnp.sum(nu_2_log_prob, axis=-1)  # (C, S)
+    jax.debug.print("base category stick-breaking log density sum: {}", nu_2_log_prob)
+
+    param_alpha = doc_concentrate * doc_prior
+    param_beta = doc_concentrate * (1.0 - jnp.cumsum(doc_prior, axis=-1))
+    assert param_alpha.shape == (C, S, K)
+    assert param_beta.shape == (C, S, K)
+
+    mu_doc_log_prob = dist.Beta(param_alpha, param_beta).log_prob(nu_doc)
+    jax.debug.print("document stick-breaking log density: {}", mu_doc_log_prob)
+    assert mu_doc_log_prob.shape == (C, S, K)
+    mu_doc_log_prob = jnp.sum(mu_doc_log_prob, axis=-1)  # (C, S)
+    jax.debug.print("document stick-breaking log density sum: {}", mu_doc_log_prob)
+
+    level1_prob =  jnp.log(cluster_prob0[None, :])  # (1, S)
+    assert cluster_prob1.shape == (S, C)
+    level2_prob =  jnp.log(jnp.transpose(cluster_prob1))  # (C, S)
+
+    jax.debug.print("super category probability: {}", level1_prob)
+    jax.debug.print("base category probability: {}", level2_prob)
+
+    un_normalized = nu_1_log_prob + nu_2_log_prob + mu_doc_log_prob + level1_prob + level2_prob  # (C, S)
+    jax.debug.print("un_normalized log prob: {}", un_normalized)
+    prob = jax.nn.softmax(un_normalized.reshape(-1))
+
     jax.debug.print("posterior prob: {}", prob)
     key, sub = random.split(key)
     sample = dist.Categorical(probs=prob).sample(sub)
@@ -566,8 +588,8 @@ def doc_weight_conditional(key, nu_doc, params, word_cats, reg_cats):
     alpha_bias = jnp.zeros_like(nu_doc, dtype=jnp.int32).at[cat_idx].set(cat_count)
     beta_bias = suffix_sum(alpha_bias)
     jax.debug.print("category counts: {}", cat_count)
-    jax.debug.print("prior alpha params: {}", alpha_bias)
-    jax.debug.print("prior beta params: {}", beta_bias)
+    jax.debug.print("prior alpha params: {}", params[0])
+    jax.debug.print("prior beta params: {}", params[1])
 
     new_params = [params[0] + alpha_bias, params[1] + beta_bias]
     jax.debug.print("new alpha params: {}", new_params[0])
@@ -587,8 +609,8 @@ def cat_weight_conditional(key, nu, params, word_cats, reg_cats):
     jax.debug.print("category counts: {}", cat_count)
     alpha_bias = jnp.zeros_like(nu, dtype=jnp.int32).at[cat_idx].set(cat_count)
     beta_bias = suffix_sum(alpha_bias)
-    jax.debug.print("prior alpha params: {}", alpha_bias)
-    jax.debug.print("prior beta params: {}", beta_bias)
+    jax.debug.print("prior alpha params: {}", params[0])
+    jax.debug.print("prior beta params: {}", params[1])
     new_params = [params[0] + alpha_bias, params[1] + beta_bias]
     jax.debug.print("new alpha params: {}", new_params[0])
     jax.debug.print("new beta params: {}", new_params[1])
@@ -601,7 +623,7 @@ def cat_weight_conditional(key, nu, params, word_cats, reg_cats):
 def reg_component_conditional(key, obs, params):
     count = float(obs.size)
     mean = jnp.mean(obs)
-    jax.debug.print("Average mean per component: {}", mean)
+    # jax.debug.print("Average mean per component: {}", mean)
     sum_var = jnp.sum((obs - mean) ** 2, keepdims=True)
     kappa = params[1] + count
     mu = (params[1] * params[0] + count * mean) / kappa
@@ -664,6 +686,44 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gen_ground_tru
 
     for it in trange(num_iters, desc="Gibbs Sampling"):
         # ------------------------
+        # Sample structural weights
+        # ------------------------
+        # Top-level
+        key, sub = random.split(key)
+        new_params, key = cat_weight_conditional(sub, struct_values["B0"], struct_values["P0"], z_gen, z_reg)
+        struct_values["P0"] = [new_params[0], new_params[1]]
+        key, sub = random.split(key)
+        struct_values["B0"] = dist.Beta(struct_values["P0"][0], struct_values["P0"][1]).sample(sub)
+        struct_values["G0"] = mix_weights(struct_values["B0"])[..., :-1]
+        print("Top-level weights (G0):", struct_values["G0"])
+        print("start structural weights sampling")
+
+        for s in range(S):
+            row_idx = jnp.where(category_assignments[:, 0] == s)[0]
+            key, sub = random.split(key)
+            new_params, key = cat_weight_conditional(sub, struct_values["B1"][s], [struct_values["P1"][0][s], struct_values["P1"][1][s]], z_gen[row_idx], z_reg[row_idx])
+            struct_values["P1"][0] = struct_values["P1"][0].at[s].set(new_params[0])
+            struct_values["P1"][1] = struct_values["P1"][1].at[s].set(new_params[1])
+            key, sub = random.split(key)
+            struct_values["B1"] = struct_values["B1"].at[s].set(dist.Beta(struct_values["P1"][0][s], struct_values["P1"][1][s]).sample(sub))
+            struct_values["G1"] = struct_values["G1"].at[s].set(mix_weights(struct_values["B1"][s])[..., :-1])
+            print(f"Super category {s} weights (G1):", struct_values["G1"][s])
+            print("Enter subcategory weights sampling")
+
+            for c in range(struct_upbd["G2"]):
+                mask = (category_assignments[:, 1] == c) & (category_assignments[:, 0] == s)
+                row_idx = jnp.where(mask)[0]
+                key, sub = random.split(key)
+                new_params, key = cat_weight_conditional(sub, struct_values["B2"][c, s], [struct_values["P2"][0][c, s], struct_values["P2"][1][c, s]], z_gen[row_idx], z_reg[row_idx])
+                struct_values["P2"][0] = struct_values["P2"][0].at[(c, s)].set(new_params[0])
+                struct_values["P2"][1] = struct_values["P2"][1].at[(c, s)].set(new_params[1])
+                key, sub = random.split(key)
+                struct_values["B2"] = struct_values["B2"].at[(c, s)].set(dist.Beta(struct_values["P2"][0][c, s], struct_values["P2"][1][c, s]).sample(sub))
+                struct_values["G2"] = struct_values["G2"].at[(c, s)].set(mix_weights(struct_values["B2"][c, s])[..., :-1])
+                print(f"Child category {c} of super category {s} weights (G2):", struct_values["G2"][c, s])
+                print("End of structural weights sampling for this child category")
+
+        # ------------------------
         # Sample generation components
         # ------------------------
         if (not gen_ground_truth):
@@ -681,7 +741,7 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gen_ground_tru
         # ------------------------
         for k in range(K):
             reg_idx = jnp.where(z_reg == k)
-            print(f"cat {k}", reg_idx)
+            # print(f"cat {k}", reg_idx)
             if reg_idx[0].size > 0:
                 key, sub = random.split(key)
                 reg_k = reg[reg_idx]
@@ -695,8 +755,8 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gen_ground_tru
                 )
                 regression_mu = regression_mu.at[k].set(new_mu)
                 regression_sigma = regression_sigma.at[k].set(new_sigma)
-                print(f"Regression component {k}: mu={new_mu}, sigma={new_sigma}")
-                print(f"Regression component {k}: updated")
+                # print(f"Regression component {k}: mu={new_mu}, sigma={new_sigma}")
+                # print(f"Regression component {k}: updated")
 
         # ------------------------
         # Sample document category assignments
@@ -705,15 +765,16 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gen_ground_tru
             key, sub = random.split(key)
             new_cat, key = doc_categories_conditional(
                 sub,
-                category_assignments[n],
                 doc_values["G"][n],
-                struct_values["B1"][category_assignments[n, 0]],
-                struct_values["B2"][category_assignments[n, 1], category_assignments[n, 0]],
-                [struct_values["P0"][0], struct_values["P0"][1]],
-                [struct_values["P1"][0][category_assignments[n, 0]], struct_values["P1"][1][category_assignments[n, 0]]],
-                [struct_values["P2"][0][category_assignments[n, 2], category_assignments[n, 1]], struct_values["P2"][1][category_assignments[n, 2], category_assignments[n, 1]]],
+                struct_values["B1"],
+                struct_values["B2"],
+                struct_values["P1"],
+                struct_values["P2"],
+                struct_values["G2"],
+                struct_params["alpha2"],
                 struct_values["L0"],
-                struct_values["L1"][category_assignments[n, 0]],
+                struct_values["L1"],
+                S,
                 C
             )
             print(f"Document {n}: Ground truth reference categories:", ground_truth["super_labels"][n] if ground_truth is not None else "N/A", ground_truth["base_labels"][n] if ground_truth is not None else "N/A")
@@ -755,45 +816,6 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gen_ground_tru
                 print(f"Document {n}: Ground truth reference z_reg:", ground_truth["reg_labels"][n])
             sample, key = reg_category_conditional(sub, reg[n], doc_values["G"][n], (regression_mu, regression_sigma))
             z_reg = z_reg.at[n].set(sample)
-
-        # ------------------------
-        # Sample structural weights
-        # ------------------------
-        # Top-level
-        key, sub = random.split(key)
-        new_params, key = cat_weight_conditional(sub, struct_values["B0"], struct_values["P0"], z_gen, z_reg)
-        struct_values["P0"] = [new_params[0], new_params[1]]
-        key, sub = random.split(key)
-        struct_values["B0"] = dist.Beta(struct_values["P0"][0], struct_values["P0"][1]).sample(sub)
-        struct_values["G0"] = mix_weights(struct_values["B0"])[..., :-1]
-        print("Top-level weights (G0):", struct_values["G0"])
-        print("start structural weights sampling")
-
-        for s in range(S):
-            row_idx = jnp.where(category_assignments[:, 0] == s)[0]
-            key, sub = random.split(key)
-            new_params, key = cat_weight_conditional(sub, struct_values["B1"][s], [struct_values["P1"][0][s], struct_values["P1"][1][s]], z_gen[row_idx], z_reg[row_idx])
-            struct_values["P1"][0] = struct_values["P1"][0].at[s].set(new_params[0])
-            struct_values["P1"][1] = struct_values["P1"][1].at[s].set(new_params[1])
-            key, sub = random.split(key)
-            struct_values["B1"] = struct_values["B1"].at[s].set(dist.Beta(struct_values["P1"][0][s], struct_values["P1"][1][s]).sample(sub))
-            struct_values["G1"] = struct_values["G1"].at[s].set(mix_weights(struct_values["B1"][s])[..., :-1])
-            print(f"Super category {s} weights (G1):", struct_values["G1"][s])
-            print("Enter subcategory weights sampling")
-
-            for c in range(struct_upbd["G2"]):
-                mask = (category_assignments[:, 1] == c) & (category_assignments[:, 0] == s)
-                row_idx = jnp.where(mask)[0]
-                key, sub = random.split(key)
-                new_params, key = cat_weight_conditional(sub, struct_values["B2"][c, s], [struct_values["P2"][0][c, s], struct_values["P2"][1][c, s]], z_gen[row_idx], z_reg[row_idx])
-                struct_values["P2"][0] = struct_values["P2"][0].at[(c, s)].set(new_params[0])
-                struct_values["P2"][1] = struct_values["P2"][1].at[(c, s)].set(new_params[1])
-                key, sub = random.split(key)
-                struct_values["B2"] = struct_values["B2"].at[(c, s)].set(dist.Beta(struct_values["P2"][0][c, s], struct_values["P2"][1][c, s]).sample(sub))
-                struct_values["G2"] = struct_values["G2"].at[(c, s)].set(mix_weights(struct_values["B2"][c, s])[..., :-1])
-                print(f"Child category {c} of super category {s} weights (G2):", struct_values["G2"][c, s])
-                print("End of structural weights sampling for this child category")
-        
         
         if (it % 10 == 0):
 
