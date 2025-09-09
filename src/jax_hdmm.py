@@ -506,12 +506,12 @@ def word_category_conditional(key, word, weight, components):
 
     cat_prob = normalize_prob(un_normalized)
 
-    print("category weight:", weight)
-    print("likelihood:", jnp.exp(log_probs))
-    print("posterior prob:", cat_prob)
+    jax.debug.print("category weight: {}", weight)
+    jax.debug.print("likelihood: {}", jnp.exp(log_probs))
+    jax.debug.print("posterior prob: {}", cat_prob)
     key, sub = random.split(key)
     sample = dist.Categorical(probs=cat_prob).sample(sub)
-    print("sampled category:", sample)
+    jax.debug.print("sampled category: {}", sample)
     return sample, key
 
 
@@ -521,17 +521,17 @@ def reg_category_conditional(key, score, weight, components):
     log_probs = reg_dist.log_prob(score)
     un_normalized = jnp.exp(log_probs) + weight
     cat_prob = normalize_prob(un_normalized)
-    print("category weight:", weight)
-    print("likelihood:", jnp.exp(log_probs))
-    print("posterior prob:", cat_prob)
+    jax.debug.print("category weight: {}", weight)
+    jax.debug.print("likelihood: {}", jnp.exp(log_probs))
+    jax.debug.print("posterior prob: {}", cat_prob)
     key, sub = random.split(key)
     sample = dist.Categorical(probs=cat_prob).sample(sub)
-    print("sampled category:", sample)
+    jax.debug.print("sampled category: {}", sample)
     return sample, key
 
 
 @jax.jit
-def doc_categories_conditional(key, cats, nu_doc, nu1, nu2, params0, params1, params2, cluster_prob0, cluster_prob1, S):
+def doc_categories_conditional(key, cats, nu_doc, nu1, nu2, params0, params1, params2, cluster_prob0, cluster_prob1, C):
     K = 10
     assert nu1.shape == (K,)
     assert nu2.shape == (K,)
@@ -542,15 +542,15 @@ def doc_categories_conditional(key, cats, nu_doc, nu1, nu2, params0, params1, pa
     cat_log_prob = jnp.log(cluster_prob0[cats[0]]) + jnp.log(cluster_prob1[cats[1]])
     un_normalized = jnp.exp(nu_1_log_prob + nu_2_log_prob + mu_doc_log_prob + cat_log_prob)
     prob = normalize_prob(un_normalized)
-    print("super category probability", jnp.exp(nu_1_log_prob))
-    print("base category probability", jnp.exp(nu_2_log_prob))
-    print("document stick-breaking probability", jnp.exp(mu_doc_log_prob))
-    print("category assignment probability", jnp.exp(cat_log_prob))
-    print("posterior prob:", prob)
+    jax.debug.print("super category probability: {}", jnp.exp(nu_1_log_prob))
+    jax.debug.print("base category probability: {}", jnp.exp(nu_2_log_prob))
+    jax.debug.print("document stick-breaking probability: {}", jnp.exp(mu_doc_log_prob))
+    jax.debug.print("category assignment probability: {}", jnp.exp(cat_log_prob))
+    jax.debug.print("posterior prob: {}", prob)
     key, sub = random.split(key)
     sample = dist.Categorical(probs=prob).sample(sub)
-    new_cat0 = sample // S
-    new_cat1 = sample % S
+    new_cat0 = sample // C
+    new_cat1 = sample % C
     new_cat = jnp.array([new_cat0, new_cat1])
     return new_cat, key
 
@@ -565,13 +565,13 @@ def doc_weight_conditional(key, nu_doc, params, word_cats, reg_cats):
     assert cat_count.shape == (K,)
     alpha_bias = jnp.zeros_like(nu_doc, dtype=jnp.int32).at[cat_idx].set(cat_count)
     beta_bias = suffix_sum(alpha_bias)
-    print("category counts:", cat_count)
-    print("prior alpha params:", alpha_bias)
-    print("prior beta params:", beta_bias)
+    jax.debug.print("category counts: {}", cat_count)
+    jax.debug.print("prior alpha params: {}", alpha_bias)
+    jax.debug.print("prior beta params: {}", beta_bias)
 
     new_params = [params[0] + alpha_bias, params[1] + beta_bias]
-    print("new alpha params:", new_params[0])
-    print("new beta params:", new_params[1])
+    jax.debug.print("new alpha params: {}", new_params[0])
+    jax.debug.print("new beta params: {}", new_params[1])
     return new_params, key
 
 
@@ -584,14 +584,14 @@ def cat_weight_conditional(key, nu, params, word_cats, reg_cats):
     reg_count = jnp.bincount(reg_cats.ravel(), length=K)
     cat_count = cat_count + reg_count
     assert cat_count.shape == (K,)
-    print("category counts:", cat_count)
+    jax.debug.print("category counts: {}", cat_count)
     alpha_bias = jnp.zeros_like(nu, dtype=jnp.int32).at[cat_idx].set(cat_count)
     beta_bias = suffix_sum(alpha_bias)
-    print("prior alpha params:", alpha_bias)
-    print("prior beta params:", beta_bias)
+    jax.debug.print("prior alpha params: {}", alpha_bias)
+    jax.debug.print("prior beta params: {}", beta_bias)
     new_params = [params[0] + alpha_bias, params[1] + beta_bias]
-    print("new alpha params:", new_params[0])
-    print("new beta params:", new_params[1])
+    jax.debug.print("new alpha params: {}", new_params[0])
+    jax.debug.print("new beta params: {}", new_params[1])
     assert new_params[0].shape == (K,)
     assert new_params[1].shape == (K,)
     return new_params, key
@@ -601,7 +601,7 @@ def cat_weight_conditional(key, nu, params, word_cats, reg_cats):
 def reg_component_conditional(key, obs, params):
     count = float(obs.size)
     mean = jnp.mean(obs)
-    print("Average mean per component:", mean)
+    jax.debug.print("Average mean per component: {}", mean)
     sum_var = jnp.sum((obs - mean) ** 2, keepdims=True)
     kappa = params[1] + count
     mu = (params[1] * params[0] + count * mean) / kappa
@@ -618,10 +618,10 @@ def reg_component_conditional(key, obs, params):
 @jax.jit
 def gen_component_conditional(key, obs, params):
     value = jnp.sum(obs, axis=0)
-    print("word counts per component:", value)
+    jax.debug.print("word counts per component: {}", value)
     new_params = params + value
-    print("prior Dirichlet params:", params)
-    print("new Dirichlet params:", new_params)
+    jax.debug.print("prior Dirichlet params: {}", params)
+    jax.debug.print("new Dirichlet params: {}", new_params)
     key, sub = random.split(key)
     sample = dist.Dirichlet(new_params).sample(sub)
     return sample, key
@@ -634,6 +634,7 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gen_ground_tru
     # Unpack state
     K = int(struct_upbd["G0"])
     S = int(struct_upbd["G1"])
+    C = int(struct_upbd["G2"])
     struct_params = state["struct_params"]
     struct_values = state["struct_values"]
     generation_components = state["mixture_components"]["generation"]
@@ -680,6 +681,7 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gen_ground_tru
         # ------------------------
         for k in range(K):
             reg_idx = jnp.where(z_reg == k)
+            print(f"cat {k}", reg_idx)
             if reg_idx[0].size > 0:
                 key, sub = random.split(key)
                 reg_k = reg[reg_idx]
@@ -694,6 +696,7 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gen_ground_tru
                 regression_mu = regression_mu.at[k].set(new_mu)
                 regression_sigma = regression_sigma.at[k].set(new_sigma)
                 print(f"Regression component {k}: mu={new_mu}, sigma={new_sigma}")
+                print(f"Regression component {k}: updated")
 
         # ------------------------
         # Sample document category assignments
@@ -711,7 +714,7 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gen_ground_tru
                 [struct_values["P2"][0][category_assignments[n, 2], category_assignments[n, 1]], struct_values["P2"][1][category_assignments[n, 2], category_assignments[n, 1]]],
                 struct_values["L0"],
                 struct_values["L1"][category_assignments[n, 0]],
-                S
+                C
             )
             print(f"Document {n}: Ground truth reference categories:", ground_truth["super_labels"][n] if ground_truth is not None else "N/A", ground_truth["base_labels"][n] if ground_truth is not None else "N/A")
             print(f"Document {n}: Sampled categories:", new_cat)
@@ -883,4 +886,4 @@ if __name__ == "__main__":
     dataset = (data["x"], data["y"])
     vocab_size = data["x"].shape[-1]
     hdmm = model(dataset, struct_upbd=struct_upbd, vocab_size=vocab_size, seed=60, gen_mixture=data["word_dists"], device="cpu")
-    model_return = gibbs_sampler(jax.random.PRNGKey(0), hdmm, struct_upbd, vocab_size, num_iters=500, gen_ground_truth=True)
+    model_return = gibbs_sampler(jax.random.PRNGKey(0), hdmm, struct_upbd, vocab_size, num_iters=500, gen_ground_truth=True, ground_truth=data)
