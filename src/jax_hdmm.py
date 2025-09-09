@@ -569,9 +569,14 @@ def cat_weight_conditional(key, nu, params, word_cats, reg_cats):
     reg_count = jnp.bincount(reg_cats.ravel(), length=K)
     cat_count = cat_count + reg_count
     assert cat_count.shape == (K,)
+    print("category counts:", cat_count)
     alpha_bias = jnp.zeros_like(nu, dtype=jnp.int32).at[cat_idx].set(cat_count)
     beta_bias = suffix_sum(alpha_bias)
+    print("prior alpha params:", alpha_bias)
+    print("prior beta params:", beta_bias)
     new_params = [params[0] + alpha_bias, params[1] + beta_bias]
+    print("new alpha params:", new_params[0])
+    print("new beta params:", new_params[1])
     assert new_params[0].shape == (K,)
     assert new_params[1].shape == (K,)
     return new_params, key
@@ -739,18 +744,20 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gen_ground_tru
         for s in range(S):
             row_idx = jnp.where(category_assignments[:, 0] == s)[0]
             key, sub = random.split(key)
-            new_params, key = cat_weight_conditional(sub, struct_values["B1"][s], struct_values["P1"], z_gen[row_idx], z_reg[row_idx])
+            new_params, key = cat_weight_conditional(sub, struct_values["B1"][s], [struct_values["P1"][0][s], struct_values["P1"][1][s]], z_gen[row_idx], z_reg[row_idx])
             struct_values["P1"][0] = struct_values["P1"][0].at[s].set(new_params[0])
             struct_values["P1"][1] = struct_values["P1"][1].at[s].set(new_params[1])
             key, sub = random.split(key)
             struct_values["B1"] = struct_values["B1"].at[s].set(dist.Beta(struct_values["P1"][0][s], struct_values["P1"][1][s]).sample(sub))
             struct_values["G1"] = struct_values["G1"].at[s].set(mix_weights(struct_values["B1"][s])[..., :-1])
+            print(f"Super category {s} weights (G1):", struct_values["G1"][s])
+            print("Enter subcategory weights sampling")
 
             for c in range(struct_upbd["G2"]):
                 mask = (category_assignments[:, 1] == c) & (category_assignments[:, 0] == s)
                 row_idx = jnp.where(mask)[0]
                 key, sub = random.split(key)
-                new_params, key = cat_weight_conditional(sub, struct_values["B2"][c, s], struct_values["P2"][s], z_gen[row_idx], z_reg[row_idx])
+                new_params, key = cat_weight_conditional(sub, struct_values["B2"][c, s], [struct_values["P2"][0][c, s], struct_values["P2"][1][c, s]], z_gen[row_idx], z_reg[row_idx])
                 struct_values["P2"][0] = struct_values["P2"][0].at[(c, s)].set(new_params[0])
                 struct_values["P2"][1] = struct_values["P2"][1].at[(c, s)].set(new_params[1])
                 key, sub = random.split(key)
