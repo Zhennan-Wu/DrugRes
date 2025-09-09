@@ -504,15 +504,14 @@ def word_category_conditional(key, word, weight, components):
     log_probs = gen_dist.log_prob(word)
     un_normalized = jnp.exp(log_probs) + weight
 
-    eps = 1e-12
-    cat_prob = un_normalized / (un_normalized.sum(axis=-1, keepdims=True) + eps)
-    # push values away from exactly 0 or 1
-    cat_prob = (cat_prob + eps) / (1 + eps * cat_prob.shape[-1])
+    cat_prob = normalize_prob(un_normalized)
 
     print("category weight:", weight)
     print("likelihood:", jnp.exp(log_probs))
+    print("posterior prob:", cat_prob)
     key, sub = random.split(key)
     sample = dist.Categorical(probs=cat_prob).sample(sub)
+    print("sampled category:", sample)
     return sample, key
 
 
@@ -520,10 +519,14 @@ def word_category_conditional(key, word, weight, components):
 def reg_category_conditional(key, score, weight, components):
     reg_dist = dist.Normal(loc=components[0], scale=jnp.sqrt(components[1]))
     log_probs = reg_dist.log_prob(score)
-    un_normalized = log_probs + jnp.log(weight + 1e-10)
-    cat_prob = un_normalized / un_normalized.sum(axis=-1, keepdims=True)
+    un_normalized = jnp.exp(log_probs) + weight
+    cat_prob = normalize_prob(un_normalized)
+    print("category weight:", weight)
+    print("likelihood:", jnp.exp(log_probs))
+    print("posterior prob:", cat_prob)
     key, sub = random.split(key)
     sample = dist.Categorical(probs=cat_prob).sample(sub)
+    print("sampled category:", sample)
     return sample, key
 
 
@@ -536,8 +539,8 @@ def doc_categories_conditional(key, cats, nu_doc, nu1, nu2, params0, params1, pa
     nu_2_log_prob = dist.Beta(params1[0], params1[1]).log_prob(nu2)
     mu_doc_log_prob = dist.Beta(params2[0], params2[1]).log_prob(nu_doc)
     cat_log_prob = jnp.log(cluster_prob0[cats[0]]) + jnp.log(cluster_prob1[cats[1]])
-    raw_prob = jnp.exp(nu_1_log_prob + nu_2_log_prob + mu_doc_log_prob + cat_log_prob)
-    prob = raw_prob / jnp.sum(raw_prob)
+    un_normalized = jnp.exp(nu_1_log_prob + nu_2_log_prob + mu_doc_log_prob + cat_log_prob)
+    prob = normalize_prob(un_normalized)
     key, sub = random.split(key)
     sample = dist.Categorical(probs=prob).sample(sub)
     new_cat0 = sample // S
@@ -708,13 +711,15 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gen_ground_tru
             # Sample word-level categories
             for m in range(M):
                 if (ground_truth is not None):
-                    print("Ground truth reference z_gen:", ground_truth["word_labels"][n, m])
+                    print(f"Document {n}, Word {m}: Ground truth reference z_gen:", ground_truth["word_labels"][n, m])
                 key, sub = random.split(key)
                 sample, key = word_category_conditional(sub, obs[n, m], doc_values["G"][n], generation_components)
                 z_gen = z_gen.at[n, m].set(sample)
 
             # Sample regression category
             key, sub = random.split(key)
+            if (ground_truth is not None):
+                print(f"Document {n}: Ground truth reference z_reg:", ground_truth["reg_labels"][n])
             sample, key = reg_category_conditional(sub, reg[n], doc_values["G"][n], (regression_mu, regression_sigma))
             z_reg = z_reg.at[n].set(sample)
 
@@ -728,11 +733,13 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gen_ground_tru
         key, sub = random.split(key)
         struct_values["B0"] = dist.Beta(struct_values["P0"][0], struct_values["P0"][1]).sample(sub)
         struct_values["G0"] = mix_weights(struct_values["B0"])[..., :-1]
-        
+        print("Top-level weights (G0):", struct_values["G0"])
+        print("start structural weights sampling")
+
         for s in range(S):
             row_idx = jnp.where(category_assignments[:, 0] == s)[0]
             key, sub = random.split(key)
-            new_params, key = cat_weight_conditional(sub, struct_values["B1"][s], struct_values["P0"], z_gen[row_idx], z_reg[row_idx])
+            new_params, key = cat_weight_conditional(sub, struct_values["B1"][s], struct_values["P1"], z_gen[row_idx], z_reg[row_idx])
             struct_values["P1"][0] = struct_values["P1"][0].at[s].set(new_params[0])
             struct_values["P1"][1] = struct_values["P1"][1].at[s].set(new_params[1])
             key, sub = random.split(key)
@@ -743,7 +750,7 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gen_ground_tru
                 mask = (category_assignments[:, 1] == c) & (category_assignments[:, 0] == s)
                 row_idx = jnp.where(mask)[0]
                 key, sub = random.split(key)
-                new_params, key = cat_weight_conditional(sub, struct_values["B2"][c, s], struct_values["P1"][s], z_gen[row_idx], z_reg[row_idx])
+                new_params, key = cat_weight_conditional(sub, struct_values["B2"][c, s], struct_values["P2"][s], z_gen[row_idx], z_reg[row_idx])
                 struct_values["P2"][0] = struct_values["P2"][0].at[(c, s)].set(new_params[0])
                 struct_values["P2"][1] = struct_values["P2"][1].at[(c, s)].set(new_params[1])
                 key, sub = random.split(key)
