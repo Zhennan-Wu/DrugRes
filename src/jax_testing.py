@@ -1391,22 +1391,21 @@ def balance_ordered(lst, C, key):
 
 def make_pairs_unique(pairs, key):
     """
-    pairs: array of shape (N, 2), each row = [s, c]
+    pairs: jnp.array of shape (N,2)
     key: jax.random.PRNGKey
-    returns: array of same shape, all pairs distinct
     """
     pairs = pairs.copy()
     seen = set()
     N = pairs.shape[0]
 
     for i in range(N):
-        pair_tuple = tuple(pairs[i])
+        # convert to Python int tuple
+        pair_tuple = tuple(int(x) for x in pairs[i])
         while pair_tuple in seen:
-            # Flip s randomly
             key, subkey = jax.random.split(key)
-            new_s = jax.random.randint(subkey, (), 0, 2)
+            new_s = int(jax.random.randint(subkey, (), 0, 2))
             pairs = pairs.at[i, 0].set(new_s)
-            pair_tuple = (new_s, pairs[i, 1])
+            pair_tuple = (new_s, int(pairs[i, 1]))
         seen.add(pair_tuple)
     return pairs
 
