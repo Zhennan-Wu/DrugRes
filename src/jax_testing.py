@@ -1389,25 +1389,33 @@ def balance_ordered(lst, C, key):
     return lst.tolist(), key
 
 
-def make_pairs_unique(pairs, key):
-    """
-    pairs: jnp.array of shape (N,2)
-    key: jax.random.PRNGKey
-    """
-    pairs = pairs.copy()
-    seen = set()
-    N = pairs.shape[0]
+def replace_duplicates(pair_ref, data_pairs, rng=None):
+    if rng is None:
+        rng = np.random.default_rng()
 
-    for i in range(N):
-        # convert to Python int tuple
-        pair_tuple = tuple(int(x) for x in pairs[i])
-        while pair_tuple in seen:
-            key, subkey = jax.random.split(key)
-            new_s = int(jax.random.randint(subkey, (), 0, 2))
-            pairs = pairs.at[i, 0].set(new_s)
-            pair_tuple = (new_s, int(pairs[i, 1]))
-        seen.add(pair_tuple)
-    return pairs
+    N = len(pair_ref)
+    pair_ref_set = {tuple(p) for p in pair_ref}
+    
+    seen = set()
+    unused = pair_ref_set.copy()
+    
+    result = []
+    for row in data_pairs:
+        tup = tuple(row)
+        if tup not in seen:
+            # keep it
+            result.append(row)
+            seen.add(tup)
+            unused.discard(tup)
+        else:
+            # duplicate → replace with random unused pair
+            new_tup = rng.choice(list(unused))
+            new_tup = tuple(new_tup.tolist())
+            result.append(new_tup)
+            seen.add(new_tup)
+            unused.remove(new_tup)
+
+    return result
 
 
 def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gt, markov_chain=None, gen_ground_truth=False):
@@ -1448,6 +1456,12 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gt, markov_cha
 
     N, M, _ = obs.shape
     key, sub = random.split(key)
+
+    unique_pairs = []
+    for s in range(S):
+        for c in range(C):
+            unique_pairs.append((s, c))
+
 
     pbar = trange(num_iters + 1, desc="Gibbs Sampling")
     for it in pbar:
@@ -1556,18 +1570,19 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gt, markov_cha
 
         rows = []
         cats = []
-        for c in range(C):
-            key, sub = random.split(key)
-            row_indices = jnp.where(local_category_assignments[:, 1] == c)[0]
-            rows.append(row_indices)
-            new_cat, key = doc_cat_conditional_vec(key, doc_values["B"][row_indices, :], struct_values["P1"], struct_values["LG0"])
-            cats.append([new_cat, c])
-            local_category_assignments = local_category_assignments.at[row_indices, 0].set(new_cat)
+        for s in range(S):
+            for c in range(C):
+                key, sub = random.split(key)
+                row_indices = jnp.where((local_category_assignments[:, 1] == c) & (local_category_assignments[:, 0] == s))[0]
+                rows.append(row_indices)
+                new_cat, key = doc_cat_conditional_vec(key, doc_values["B"][row_indices, :], struct_values["P1"], struct_values["LG0"])
+                cats.append([int(new_cat), c])
+                local_category_assignments = local_category_assignments.at[row_indices, 0].set(new_cat)
         # Balance super-cluster assignments
-        key, sub = random.split(key)
-        balanced_cats = make_pairs_unique(jnp.array(cats), sub)
+        balanced_cats = replace_duplicates(unique_pairs, cats)
         for row_indices, balanced_cat in zip(rows, balanced_cats):
             local_category_assignments = local_category_assignments.at[row_indices, 0].set(balanced_cat[0])
+        
         
 
         for n in range(N):
