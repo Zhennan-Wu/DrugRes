@@ -902,45 +902,6 @@ def doc_weight_conditional(key, nu_doc, params, word_cats, reg_cats):
     return new_params, key
 
 
-# @jax.jit
-def doc_cat_conditional_vec(key, nu_docs, nu_param, cluster_prob):
-    '''
-    Sample document category assignment given stick-breaking weights and cluster probabilities.
-    Args:
-        key: JAX PRNGKey
-        nu_doc: (K,) document-level stick-breaking weights
-        nu_param: list of two (K,) arrays, Beta parameters [alpha, beta]
-        cluster_prob: (K,) cluster probabilities
-    Returns:
-        new_cat: int, sampled category index from 0 to K-1
-        new_key: updated JAX PRNGKey
-    '''
-    nu_docs_vec = nu_docs[None, :, :]
-    alpha = nu_param[0][:, None, :]
-    beta = nu_param[1][:, None, :]
-    alpha = jnp.clip(alpha, a_min=1e-8)
-    beta = jnp.clip(beta, a_min=1e-8)
-    nu_docs_vec = jnp.clip(nu_docs_vec, a_min=1e-8, a_max=1-1e-8)
-    nu_log_prob = dist.Beta(alpha[..., :-1], beta[..., :-1]).log_prob(nu_docs_vec[..., :-1])
-    if (jnp.any(jnp.isinf(nu_log_prob)) or jnp.any(jnp.isnan(nu_log_prob))):
-        print("alpha:", alpha)
-        print("beta:", beta)
-        print("nu_docs_vec:", nu_docs_vec)
-        raise ValueError("Numerical issue in document-level Beta log-prob computation.")
-    nu_log_prob = jnp.sum(nu_log_prob, axis=(-2, -1)) 
-    cluster_log_prob = jnp.log(cluster_prob + 1e-12)*len(nu_docs)
-    if (jnp.any(jnp.isinf(cluster_log_prob)) or jnp.any(jnp.isnan(cluster_log_prob))):
-        print("cluster_prob:", cluster_prob)
-        raise ValueError("Numerical issue in cluster probability computation.")
-    cat_params = nu_log_prob + cluster_log_prob
-    un_normalized = jnp.array(cat_params)
-    prob = jax.nn.softmax(un_normalized.reshape(-1))
-    key, sub = random.split(key)
-    new_cat = dist.Categorical(probs=prob).sample(sub)
-    print(f"raw value is {un_normalized}, super category prob is {prob}, choose {new_cat}")
-    return new_cat, key
-
-
 @jax.jit
 def super_cluster_weight_conditional(key, nu_cluster, params, local_cluster_cats):
     """
@@ -1339,10 +1300,23 @@ def replace_duplicates(pair_ref, data_pairs, prob_ref=None, rng=None):
     return result
 
 
-def doc_base_cat_conditional(key, doc_nu, base_cat_nu, base_cat_prior, cluster_prior):
-
-    doc_alpha = base_cat_prior[0]
-    doc_beta = base_cat_prior[1]
+def doc_base_cat_conditional(key, doc_nu, base_cat_param, base_cat_nu, super_cat_param, cluster_prob):
+    """
+    Sample document base-cluster category assignment given stick-breaking weights and cluster probabilities.
+    Args:
+        key: JAX PRNGKey
+        doc_nu: (C,) document-level stick-breaking weights
+        base_cat_param: list of two (C,) arrays, Beta parameters [alpha, beta]
+        base_cat_nu: (C,) base-cluster-level stick-breaking weights
+        super_car_param: (C,) cluster probabilities
+    Returns:
+        new_cat: int, sampled category index from 0 to C-1
+        new_key: updated JAX PRNGKey
+    """
+    non_trivial_thres = 1e-2
+    doc_non_trivial_indices = jnp.where(doc_nu[..., :-1] > non_trivial_thres)[0]
+    doc_alpha = base_cat_param[0]
+    doc_beta = base_cat_param[1]
     doc_alpha = jnp.clip(doc_alpha, a_min=1e-8)
     doc_beta = jnp.clip(doc_beta, a_min=1e-8)
     doc_nu = jnp.clip(doc_nu, a_min=1e-8, a_max=1-1e-8)
@@ -1352,14 +1326,33 @@ def doc_base_cat_conditional(key, doc_nu, base_cat_nu, base_cat_prior, cluster_p
         print("doc_beta:", doc_beta)
         print("doc_nu:", doc_nu)
         raise ValueError("Numerical issue in document-level Beta log-prob computation.")
-    doc_nu_cat_log_prob = jnp.sum(doc_nu_cat_log_prob, axis=-1)  # (C,)
-    un_normalized = doc_nu_cat_log_prob + jnp.log(cluster_prior + 1e-12)
+    adjusted_doc_nu_cat_log_prob = doc_nu_cat_log_prob[..., doc_non_trivial_indices]
+    doc_nu_cat_log_prob = jnp.sum(adjusted_doc_nu_cat_log_prob, axis=-1)  # (C,)
+
+    base_non_trivial_indices = jnp.where(base_cat_nu[..., :-1] > non_trivial_thres)[0]
+    super_alpha = super_cat_param[0]
+    super_beta = super_cat_param[1]
+    super_alpha = jnp.clip(super_alpha, a_min=1e-8)
+    super_beta = jnp.clip(super_beta, a_min=1e-8)
+    base_cat_nu = jnp.clip(base_cat_nu, a_min=1e-8, a_max=1-1e-8)
+    base_cat_log_prob = dist.Beta(super_alpha[..., :-1], super_beta[..., :-1]).log_prob(base_cat_nu[..., :-1])
+    if (jnp.any(jnp.isinf(base_cat_log_prob)) or jnp.any(jnp.isnan(base_cat_log_prob))):
+        print("base_cat_param[0]:", base_cat_param[0])
+        print("base_cat_param[1]:", base_cat_param[1])
+        print("base_cat_nu:", base_cat_nu)
+        raise ValueError("Numerical issue in base-cluster-level Beta log-prob computation.")
+    adjusted_base_cat_log_prob = base_cat_log_prob[..., base_non_trivial_indices]
+    base_cat_log_prob = jnp.sum(adjusted_base_cat_log_prob, axis=-1)  # (C,)
+
+    un_normalized = doc_nu_cat_log_prob + base_cat_log_prob + jnp.log(cluster_prob + 1e-12)
     prob = jax.nn.softmax(un_normalized.reshape(-1))
     key, sub = random.split(key)
     new_cat = dist.Categorical(probs=prob).sample(sub)
     return new_cat, key
 
-def super_cat_conditional(key, nu_base_cat, super_cat_param, super_cat_nu, global_param):
+def super_cat_conditional(key, nu_base_cat, super_cat_param, super_cat_nu, global_param, cluster_prob):
+    non_trivial_thres = 1e-2
+    base_non_trivial_indices = jnp.where(nu_base_cat[..., :-1] > non_trivial_thres)[0]
     alpha = super_cat_param[0]
     beta = super_cat_param[1]
     alpha = jnp.clip(alpha, a_min=1e-8)
@@ -1371,8 +1364,10 @@ def super_cat_conditional(key, nu_base_cat, super_cat_param, super_cat_nu, globa
         print("beta:", beta)
         print("nu_base_cat:", nu_base_cat)
         raise ValueError("Numerical issue in super-cluster-level Beta log-prob computation.")
-    nu_base_log_prob = jnp.sum(nu_base_log_prob, axis=-1)
+    adjusted_nu_base_log_prob = nu_base_log_prob[..., base_non_trivial_indices]
+    nu_base_log_prob = jnp.sum(adjusted_nu_base_log_prob, axis=-1) # (S,)
 
+    super_non_trivial_indices = jnp.where(super_cat_nu[..., :-1] > non_trivial_thres)[0]
     global_alpha = global_param[0]
     global_beta = global_param[1]
     global_alpha = jnp.clip(global_alpha, a_min=1e-8)
@@ -1384,8 +1379,9 @@ def super_cat_conditional(key, nu_base_cat, super_cat_param, super_cat_nu, globa
         print("global_beta:", global_beta)
         print("super_cat_nu:", super_cat_nu)
         raise ValueError("Numerical issue in super-cluster-level Beta log-prob computation.")
-    nu_super_log_prob = jnp.sum(nu_super_log_prob, axis=-1)
-    cat_params = nu_base_log_prob + nu_super_log_prob
+    adjusted_nu_super_log_prob = nu_super_log_prob[..., super_non_trivial_indices]
+    nu_super_log_prob = jnp.sum(adjusted_nu_super_log_prob, axis=-1) # (S,)
+    cat_params = nu_base_log_prob + nu_super_log_prob + jnp.log(cluster_prob + 1e-12)
     un_normalized = jnp.array(cat_params)
     prob = jax.nn.softmax(un_normalized.reshape(-1))
     key, sub = random.split(key)
@@ -1567,7 +1563,7 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gt, file_prefi
                 s_idx = int(local_category_assignments[n, 0])
                 
                 doc_alpha, doc_beta = gen_next_level_prior(struct_values["G2"][:, s_idx], struct_params["alpha2"][:, s_idx])
-                new_cat, key = doc_base_cat_conditional(sub, doc_values["B"][n], struct_values["B2"][:, s_idx], [doc_alpha, doc_beta], struct_values["LG1"][s_idx])
+                new_cat, key = doc_base_cat_conditional(sub, doc_values["B"][n], [doc_alpha, doc_beta], struct_values["B2"][:, s_idx], [struct_values["Prior2"][0][:, s_idx], struct_values["Prior2"][1][:, s_idx]], struct_values["LG1"][s_idx])
                 # update gibbs state
                 local_category_assignments = local_category_assignments.at[n, 1].set(new_cat)
                 # update doc-level prior
@@ -1592,7 +1588,7 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gt, file_prefi
                     assert base_cat_nu.shape == (K,)
                     assert parent_cat_alpha.shape == (S, K)
                     assert parent_cat_beta.shape == (S, K)
-                    new_cat, prob = super_cat_conditional(sub, base_cat_nu, [parent_cat_alpha, parent_cat_beta], struct_values["B1"], struct_values["Prior1"])
+                    new_cat, prob = super_cat_conditional(sub, base_cat_nu, [parent_cat_alpha, parent_cat_beta], struct_values["B1"], struct_values["Prior1"], struct_values["LG0"])
                     cats.append([int(new_cat), int(c)])
                     probs.append(prob)
 
