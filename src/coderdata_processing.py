@@ -1,4 +1,5 @@
 
+import os
 from os import name
 import pandas as pd
 import coderdata as cd
@@ -6,6 +7,106 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator  # Correct import for new RDKit
 import pubchempy as pcp
+import matplotlib.pyplot as plt
+
+
+def visualize_response_statistics(dataset: cd.Dataset, data_name, metric: str = 'aac'):
+    """
+    Visualize summary statistics and distribution of AAC values in a DataFrame.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The DataFrame containing the AAC values.
+    column : str, default='aac'
+        The name of the column containing AAC values.
+    """
+    df = dataset.format(data_type='experiments', metrics=metric)
+    column = 'dose_response_value'
+    if column not in df.columns:
+        raise ValueError(f"Column '{column}' not found in DataFrame.")
+
+    # Drop NaNs to avoid plotting issues
+    data = pd.to_numeric(df[column], errors='coerce').dropna()
+
+    if data.empty:
+        print(f"⚠️ Column '{metric}' in dataset is empty or non-numeric after cleaning.")
+        return
+    data = data[np.isfinite(data)]
+    # lower, upper = data.quantile(0.01), data.quantile(0.99)
+    # data = data.clip(lower, upper)
+    # Compute summary statistics
+    summary = data.describe(percentiles=[0.05, 0.25, 0.5, 0.75, 0.95])
+    print(f"📊 Summary statistics for `{metric}`:\n")
+    print(summary.to_string())
+    print()
+
+    # Set up plotting layout
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # Histogram + KDE
+    axes[0].hist(data, bins=30, density=True, alpha=0.6, color='steelblue', edgecolor='black')
+    data.plot(kind='kde', ax=axes[0], color='darkred')
+    axes[0].set_title(f'Histogram & KDE of {metric}')
+    axes[0].set_xlabel(column)
+    axes[0].set_ylabel('Density')
+
+    # Boxplot
+    axes[1].boxplot(data, vert=True, patch_artist=True,
+                    boxprops=dict(facecolor='lightblue', color='navy'),
+                    medianprops=dict(color='darkred'))
+    axes[1].set_title(f'Boxplot of {metric}')
+    axes[1].set_ylabel(column)
+
+    plt.tight_layout()
+    file_dir = f"../plts/response_metrics/{data_name}"
+    if not os.path.exists(file_dir):
+        os.makedirs(file_dir)
+    plt.savefig(f"{file_dir}/{metric}_distribution.png")
+    plt.close(fig)
+    print(f"Distribution plot saved to {file_dir}/{metric}_distribution.png")
+
+
+def summarize_all_available_metrics(datasets: dict):
+    """
+    Summarize all available metrics in the experiments DataFrame of a Dataset.
+
+    Parameters
+    ----------
+    dataset : cd.Dataset
+        The Dataset object containing the experiments DataFrame.
+    """
+    avail_metrics = set()
+    for name, data in datasets.items():
+        if (not hasattr(data, 'experiments')) or (data.experiments is None):
+            print(f"Experiments data not found for dataset '{name}'. Skipping.")
+            continue
+        metrics = data.experiments.dose_response_metric.unique()
+        avail_metrics.update(metrics)
+        print(f"Available metrics in dataset '{name}': {metrics}")
+    common_metrics = set(avail_metrics)
+    for name, data in datasets.items():
+        if (not hasattr(data, 'experiments')) or (data.experiments is None):
+            continue
+        metrics = data.experiments.dose_response_metric.unique()
+        common_metrics.intersection_update(set(metrics))
+    return list(common_metrics)
+
+
+def visualize_responses_across_datasets(dfs: dict, metric: str = 'aac'):
+    """
+    Visualize summary statistics and distribution of AAC values across multiple datasets.
+
+    Parameters
+    ----------
+    dfs : dict
+        A dictionary where keys are dataset names and values are DataFrames.
+    metric : str, default='aac'
+        The name of the metric to visualize.
+    """
+    for name, df in dfs.items():
+        print(f"Dataset: {name}")
+        visualize_response_statistics(df, name, metric=metric)
 
 
 def summarize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
