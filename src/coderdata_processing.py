@@ -1,6 +1,8 @@
 
+import numbers
 import os
 from os import name
+import torch
 import pandas as pd
 import coderdata as cd
 import numpy as np
@@ -8,6 +10,7 @@ from rdkit import Chem
 from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator  # Correct import for new RDKit
 import pubchempy as pcp
 import matplotlib.pyplot as plt
+import json
 
 
 def visualize_response_statistics(dataset: cd.Dataset, data_name, metric: str = 'aac'):
@@ -65,6 +68,99 @@ def visualize_response_statistics(dataset: cd.Dataset, data_name, metric: str = 
     plt.savefig(f"{file_dir}/{metric}_distribution.png")
     plt.close(fig)
     print(f"Distribution plot saved to {file_dir}/{metric}_distribution.png")
+
+
+def visualize_sample_response_statistics(dataset: dict):
+    """
+    Visualize summary statistics and distribution of AAC values in a DataFrame.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The DataFrame containing the AAC values.
+    column : str, default='aac'
+        The name of the column containing AAC values.
+    """
+    combined_df = pd.concat(dataset.values(), keys=dataset.keys(), names=['Source', 'Row'])
+    combined_df = combined_df.reset_index(level='Source').reset_index(drop=True)
+    column = 'dose_response_value'
+
+    # Drop NaNs to avoid plotting issues
+    data = pd.to_numeric(combined_df[column], errors='coerce').dropna()
+
+    data = data[np.isfinite(data)]
+    # lower, upper = data.quantile(0.01), data.quantile(0.99)
+    # data = data.clip(lower, upper)
+    # Compute summary statistics
+    summary = data.describe(percentiles=[0.05, 0.25, 0.5, 0.75, 0.95])
+    print(f"📊 Summary statistics:\n")
+    print(summary.to_string())
+    print()
+
+    # Set up plotting layout
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # Histogram + KDE
+    axes[0].hist(data, bins=30, density=True, alpha=0.6, color='steelblue', edgecolor='black')
+    data.plot(kind='kde', ax=axes[0], color='darkred')
+    axes[0].set_title(f'Histogram & KDE')
+    axes[0].set_xlabel(column)
+    axes[0].set_ylabel('Density')
+
+    # Boxplot
+    axes[1].boxplot(data, vert=True, patch_artist=True,
+                    boxprops=dict(facecolor='lightblue', color='navy'),
+                    medianprops=dict(color='darkred'))
+    axes[1].set_title(f'Boxplot')
+    axes[1].set_ylabel(column)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def clean_experiments_across_dfs(dfs: dict, metric: str = 'aac'):
+    """
+    Clean experiments DataFrames by removing rows with NaN or infinite values in the specified metric column.
+
+    Parameters
+    ----------
+    dfs : dict
+        A dictionary where keys are dataset names and values are DataFrames.
+    metric : str, default='aac'
+        The name of the metric column to clean.
+    
+    Returns
+    -------
+    dict
+        A new dictionary with cleaned DataFrames.
+    """
+    if (metric in ["auc", "fit_auc"]):
+        thres = 0.9
+    elif (metric in ["aac", "fit_aac"]):
+        thres=0.05
+    else:
+        raise ValueError(f"Metric '{metric}' not recognized. Supported metrics: 'auc', 'fit_auc', 'aac', 'fit_aac'.")
+    cleaned_dfs = {}
+    for name, dataset in dfs.items():
+        df = dataset.format(data_type='experiments', metrics=metric)
+        column = 'dose_response_value'
+        if column not in df.columns:
+            raise ValueError(f"Column '{column}' not found in DataFrame.")
+
+        df[column] = pd.to_numeric(df[column], errors='coerce')
+        cleaned_df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=[column])
+        # cleaned_df = cleaned_df[cleaned_df[column].between(thres, 1-thres)]
+        if (metric in ["auc", "fit_auc"]):
+            cleaned_df = cleaned_df[cleaned_df[column] <= thres]
+        elif (metric in ["aac", "fit_aac"]):
+            cleaned_df = cleaned_df[cleaned_df[column] >= thres]
+        else:
+            raise ValueError(f"Metric '{metric}' not recognized. Supported metrics: 'auc', 'fit_auc', 'aac', 'fit_aac'.")
+        if cleaned_df[column].empty:
+            print(f"⚠️ Column '{column}' in dataset is empty or non-numeric after cleaning.")
+        cleaned_dfs[name] = cleaned_df
+        print(f"Dataset '{name}': Cleaned {len(df) - len(cleaned_df)} rows with NaN or infinite '{column}' values.")
+    return cleaned_dfs
 
 
 def summarize_all_available_metrics(datasets: dict):
@@ -227,6 +323,7 @@ def unify_feature_across_dataset(dfs: dict, feature: str, *args, **kwargs):
         sample_feature_dfs = {}
         for name, dataset in dfs.items():
             df = dataset.format(data_type="transcriptomics")
+            df = np.log1p(df)
             all_columns.update(df.columns)
             sample_feature_dfs[name] = df
         df_dict_aligned = {
@@ -313,10 +410,10 @@ def data_attribute_check(datasets: dict, ignored_features: list=None):
             print(f"Dataset '{dataset_name}' has all required features ✅")
 
 
-def min_max_scaling(df):
+def binarize(df, nbit, shift=0.0):
     """
-    Apply min-max scaling to a DataFrame.
-    
+    Apply binarization to a DataFrame.
+
     Parameters
     ----------
     df : pd.DataFrame
@@ -329,15 +426,24 @@ def min_max_scaling(df):
     """
     min_value = df.min().min()
     max_value = df.max().max()
-    # Perform min-max scaling
-    scaled_df = (df - min_value) / (max_value - min_value)
-    return scaled_df
+    if shift + min_value < 0:
+        raise ValueError("Shift value is too small, resulting in negative values after shifting.")
+    df = df + shift
+    max_allowed = 2**nbit
+    if (max_value + shift) > max_allowed:
+        print(f"Warning: max value {max_value} after shifting exceeds {max_allowed}. Clipping to {max_allowed}.")
+    df_bdd = df.clip(upper=max_allowed)
+    # Perform binarization
+    scaled_df = ((df_bdd / max_allowed) * (2**nbit - 1)).round().astype(int)
+    df_bits = scaled_df.applymap(lambda x: [int(b) for b in format(x, f'0{nbit}b')])
+    df_bits_array = df_bits.applymap(np.array)
+    return df_bits_array
 
 
-def min_max_scaling_across_dfs(df_dict, feature: str):
+def binarize_across_dfs(df_dict, feature: str):
     """
-    Apply min-max scaling across multiple DataFrames.
-    
+    Apply binarization across multiple DataFrames.
+
     Parameters
     ----------
     df_dict : dict
@@ -352,16 +458,18 @@ def min_max_scaling_across_dfs(df_dict, feature: str):
     """
     if (feature == "transcriptomics"):
         for name, df in df_dict.items():
-            log_trans = np.log1p(df)
-            df_dict[name] = min_max_scaling(log_trans)
+            df = df.replace([np.inf, -np.inf], 0).fillna(0)
+            df_dict[name] = binarize(df, nbit=6, shift=0.0)
     elif (feature == "proteomics"):
         for name, df in df_dict.items():
-            df_dict[name] = min_max_scaling(df)
+            df = df.replace([np.inf, -np.inf], 0).fillna(0)
+            df_dict[name] = binarize(df, nbit=6, shift=40.)
     elif (feature == "copy_number"):
         for name, df in df_dict.items():
-            df_dict[name] = min_max_scaling(df)
+            df = df.replace([np.inf, -np.inf], 2).fillna(2)
+            df_dict[name] = binarize(df, nbit=4, shift=0.0)
     else:
-        print(f"Feature {feature} not supported for min-max scaling")
+        print(f"Feature {feature} not supported for binarization")
     return df_dict
 
 
@@ -435,7 +543,13 @@ def dip_data_across_dfs(df_dict, **kwargs):
     for feature, df in df_dict.items():
         df_dict_dipped[feature] = {}
         for dataset, value in df.items():
-            df_dict_dipped[feature][dataset] = value.sample(frac=frac, random_state=42)
+            # keep the distribution of response values
+            value["response_bin"] = pd.qcut(value["dose_response_value"], q=5)
+            sampled_df = value.groupby("response_bin", group_keys=False).apply(
+                lambda x: x.sample(frac=frac, random_state=42)
+            )
+            df_dict_dipped[feature][dataset] = sampled_df.drop(columns=["response_bin"])
+            # df_dict_dipped[feature][dataset] = value.sample(frac=frac, random_state=42)
     return df_dict_dipped
 
 
@@ -463,6 +577,41 @@ def dip_experiments_across_dfs(df_dict, **kwargs):
     return df_dict_dipped
 
 
+def slice_data_across_dfs(df_dict, **kwargs):
+    """
+    Apply dropout to DataFrames by randomly setting a proportion of values to NaN.
+    
+    Parameters
+    ----------
+    df_dict : dict
+        A dictionary where keys are DataFrame names and values are DataFrames.
+    dip_size : int
+        The number of values to set to NaN in each DataFrame.
+
+    Returns
+    -------
+    dict
+        A new dictionary with DataFrames after applying dropout.
+    """
+    chunk_idx = kwargs.get("chunk_idx", 0)
+    total_chunks = kwargs.get("total_chunks", 10)
+
+    df_dict_sliced = {}
+    for name, value in df_dict.items():
+        total_size = value.shape[0]
+        if total_size == 0:
+            print(f"Warning: DataFrame '{name}' is empty. Skipping slicing.")
+            continue
+        chunk_size = total_size // total_chunks
+        start_idx = chunk_idx * chunk_size
+        end_idx = (chunk_idx + 1) * chunk_size if chunk_idx < total_chunks - 1 else total_size
+        if start_idx >= end_idx:
+            print(f"Warning: DataFrame '{name}' is too small to slice. Skipping.")
+            continue
+        df_dict_sliced[name] = value.iloc[start_idx:end_idx]
+    return df_dict_sliced
+
+
 def extract_row(df_ref, sample_id):
     """
     Extract a row from a DataFrame based on sample_id.
@@ -482,7 +631,8 @@ def extract_row(df_ref, sample_id):
     """
     if sample_id in df_ref.index:
         feature = df_ref.loc[sample_id].to_numpy()
-        feature[np.isnan(feature)] = 0
+        if isinstance(feature, numbers.Number):
+            feature[np.isnan(feature)] = 0
         id = sample_id
     else:
         feature = np.zeros((df_ref.shape[1],))   
@@ -668,7 +818,7 @@ def extract_data_position(feature_list, features, cell_id_ref):
     return indices
 
 
-def cat_drug_response_features_across_datasets(features_dfs:dict, labels_dfs: dict, cell_id_ref_dfs: dict, feature_list: list) -> np.ndarray:
+def cat_drug_response_features_across_datasets(features_dfs:dict, labels_dfs: dict, cell_id_ref_dfs: dict, feature_list: list, show_status:bool=False) -> np.ndarray:
     """
     Concatenate features from different omics data types across multiple datasets.
     Parameters
@@ -692,12 +842,18 @@ def cat_drug_response_features_across_datasets(features_dfs:dict, labels_dfs: di
         labels = labels_dfs[name]
         cell_id_ref = cell_id_ref_dfs[name]
         data, label = cat_drug_response_features(features, labels, cell_id_ref, feature_list)
+        if show_status:
+            print(f"Dataset '{name}': {data.shape}")
+        if data.size == 0 or label.size == 0:
+            if show_status:
+                print(f"Warning: Dataset '{name}' has no valid samples after feature extraction. Skipping.")
+            continue
         training_datas.append(data)
         training_labels.append(label)
     return np.concatenate(training_datas, axis=0), np.concatenate(training_labels, axis=0)
 
 
-def cat_drug_response_features(features:dict, labels: list, cell_id_ref: dict, feature_list: list) -> np.ndarray:
+def cat_drug_response_features(features:dict, labels: list, cell_id_ref: dict, feature_list: list, show_status:bool=False) -> np.ndarray:
     """
     Concatenate features from different omics data types.
     Parameters
@@ -723,15 +879,20 @@ def cat_drug_response_features(features:dict, labels: list, cell_id_ref: dict, f
         cell_features = []
         for feature in feature_list:
             if feature in features:
-                cell_features.append(features[feature][s_id])
+                if isinstance(features[feature][s_id], np.ndarray):
+                    cell_features.extend(features[feature][s_id])
+                else:
+                    cell_features.append(features[feature][s_id])
             else:
                 raise KeyError(f"Feature '{feature}' not found in features dictionary.")
         cell_features.append(features["fingerprint"][s_id])
         training_data.append(np.concatenate(cell_features, axis=0))
-    return np.array(training_data), np.array(training_label)
+    training_data = np.array(training_data)
+    training_label = np.array(training_label)
+    return training_data, training_label
 
 
-def cat_cell_features(features:dict, sample_size: int, feature_list: list=None) -> np.ndarray:
+def cat_cell_features(features:dict, sample_size: int, feature_list: list=None, show_status:bool=False) -> np.ndarray:
     """
     Concatenate features from different omics data types.
     Parameters
@@ -794,3 +955,87 @@ def preprocess_cell_line(cell_id_ref, filtered_dfs, feature_list):
     X = cat_cell_features(feature_dict, len(list(cell_ids)), feature_list)
     print(f"Cell line count: {len(cell_ids)}")
     return X
+
+
+def save_dfs_as_pt(
+    experiments_dfs,
+    drugs_ref_dfs,
+    dim_reduced_dfs,
+    unique_cell_ids_across_dfs,
+    features=["transcriptomics", "proteomics", "copy_number"],
+    n_chunks=100,
+    save_dir=f"../data/pt_data/",
+    show_status:bool=False
+):
+    """
+    Convert large experiment DataFrames into PyTorch tensors and save them as .pt files in chunks.
+    
+    Parameters
+    ----------
+    experiments_dfs : list of pd.DataFrame
+        List of experiment dataframes.
+    drugs_ref_dfs : list of pd.DataFrame
+        Reference dataframes for drugs.
+    dim_reduced_dfs : list of pd.DataFrame
+        Dimensionality reduced datasets.
+    unique_cell_ids_across_dfs : list
+        Unique cell IDs across all datasets.
+    features : list of str
+        List of feature types to extract.
+    fraction : float
+        Fraction of data to sample at a time.
+    chunk_size : int
+        Number of experiments to process per chunk.
+    save_dir : str
+        Directory to save PyTorch tensor files.
+    """
+    save_dir = save_dir + "_".join(features) + "/"
+    os.makedirs(save_dir, exist_ok=True)
+
+    # for name, df in experiments_dfs.items():
+    #     if len(df) < n_chunks:
+    #         raise ValueError(
+    #             f"Dataset '{name}' has {len(df)} rows but n_chunks={n_chunks}. "
+    #             "Reduce n_chunks or provide more data."
+    #         )
+        
+    start_idx = 0
+    for chunk_id in range(n_chunks):
+        print(f"Processing chunk {chunk_id+1}/{n_chunks}...")
+        
+        # Sample a fraction of the data
+        experiments_dfs_sliced = slice_data_across_dfs(
+            experiments_dfs, 
+            chunk_idx=chunk_id,
+            total_chunks=n_chunks
+        )
+
+        # Preprocess to get feature dict and response
+        feature_dict_footprint, resp_footprint = preprocess_experiment_with_footprint(
+            experiments_dfs_sliced, 
+            drugs_ref_dfs, 
+            dim_reduced_dfs, 
+            drug_target=None,
+            show_status=show_status
+        )
+        
+        # Concatenate features across datasets
+        X_chunk_np, y_chunk_np = cat_drug_response_features_across_datasets(
+            feature_dict_footprint, 
+            resp_footprint, 
+            unique_cell_ids_across_dfs, 
+            features,
+            show_status=show_status
+        )
+        
+        # Convert to PyTorch tensors
+        X_chunk = torch.from_numpy(X_chunk_np).float()
+        y_chunk = torch.from_numpy(y_chunk_np).float()
+        
+        # Save chunk as .pt
+        torch.save((X_chunk, y_chunk), os.path.join(save_dir, f"chunk_{chunk_id}.pt"))
+        
+        start_idx += X_chunk.shape[0]
+        print(f"Chunk {chunk_id+1}/{n_chunks} saved with {X_chunk.shape[0]} samples.")
+    print(f"Saved {n_chunks} chunks to {save_dir}.")
+    print("You can later load them with torch.load for PyTorch usage.")
