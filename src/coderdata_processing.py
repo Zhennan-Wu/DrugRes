@@ -11,6 +11,8 @@ from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator  # Correct impo
 import pubchempy as pcp
 import matplotlib.pyplot as plt
 import json
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm
 
 
 def visualize_response_statistics(dataset: cd.Dataset, data_name, metric: str = 'aac'):
@@ -30,6 +32,7 @@ def visualize_response_statistics(dataset: cd.Dataset, data_name, metric: str = 
         raise ValueError(f"Column '{column}' not found in DataFrame.")
 
     # Drop NaNs to avoid plotting issues
+    df = df.copy()
     data = pd.to_numeric(df[column], errors='coerce').dropna()
 
     if data.empty:
@@ -86,6 +89,7 @@ def visualize_sample_response_statistics(dataset: dict):
     column = 'dose_response_value'
 
     # Drop NaNs to avoid plotting issues
+    combined_df = combined_df.copy()
     data = pd.to_numeric(combined_df[column], errors='coerce').dropna()
 
     data = data[np.isfinite(data)]
@@ -147,7 +151,7 @@ def clean_experiments_across_dfs(dfs: dict, metric: str = 'aac'):
         if column not in df.columns:
             raise ValueError(f"Column '{column}' not found in DataFrame.")
 
-        df[column] = pd.to_numeric(df[column], errors='coerce')
+        df.loc[:, column] = pd.to_numeric(df[column], errors='coerce')
         cleaned_df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=[column])
         # cleaned_df = cleaned_df[cleaned_df[column].between(thres, 1-thres)]
         if (metric in ["auc", "fit_auc"]):
@@ -435,8 +439,9 @@ def binarize(df, nbit, shift=0.0):
     df_bdd = df.clip(upper=max_allowed)
     # Perform binarization
     scaled_df = ((df_bdd / max_allowed) * (2**nbit - 1)).round().astype(int)
-    df_bits = scaled_df.applymap(lambda x: [int(b) for b in format(x, f'0{nbit}b')])
-    df_bits_array = df_bits.applymap(np.array)
+    # df_bits = scaled_df.applymap(lambda x: [int(b) for b in format(x, f'0{nbit}b')])
+    # df_bits_array = df_bits.applymap(np.array)
+    df_bits_array = scaled_df.apply(lambda col: col.map(lambda x: np.array([int(b) for b in format(x, f'0{nbit}b')], dtype=np.uint8)))
     return df_bits_array
 
 
@@ -765,7 +770,8 @@ def preprocess_experiment_with_footprint(experiments_dfs, drugs_ref_dfs, filtere
         feature_dict[name] = {}
         response_dict[name] = []
         drugs_ref = drugs_ref_dfs[name]
-        print(f"Processing dataset: {name} with {len(experiments)} experiments")
+        if show_status:
+            print(f"Processing dataset: {name} with {len(experiments)} experiments")
         for index, row in experiments.iterrows():
             if drug_target is None or str(row["improve_drug_id"]) == str(drug_target):
                 footprint = get_drug_fingerprints(row["improve_drug_id"], drugs_ref)
@@ -790,7 +796,8 @@ def preprocess_experiment_with_footprint(experiments_dfs, drugs_ref_dfs, filtere
                     feature_dict[name][key].append(feature)
 
                 response_dict[name].append(row["dose_response_value"])
-        print(f"Finished processing dataset: {name} with {len(response_dict[name])} selected samples")
+        if show_status:
+            print(f"Finished processing dataset: {name} with {len(response_dict[name])} selected samples")
     return feature_dict, response_dict
 
 
@@ -991,17 +998,9 @@ def save_dfs_as_pt(
     """
     save_dir = save_dir + "_".join(features) + "/"
     os.makedirs(save_dir, exist_ok=True)
-
-    # for name, df in experiments_dfs.items():
-    #     if len(df) < n_chunks:
-    #         raise ValueError(
-    #             f"Dataset '{name}' has {len(df)} rows but n_chunks={n_chunks}. "
-    #             "Reduce n_chunks or provide more data."
-    #         )
         
     start_idx = 0
-    for chunk_id in range(n_chunks):
-        print(f"Processing chunk {chunk_id+1}/{n_chunks}...")
+    for chunk_id in tqdm(range(n_chunks), desc="Saving chunks"):
         
         # Sample a fraction of the data
         experiments_dfs_sliced = slice_data_across_dfs(
@@ -1027,15 +1026,26 @@ def save_dfs_as_pt(
             features,
             show_status=show_status
         )
-        
+
+        if X_chunk_np is None or getattr(X_chunk_np, "size", 0) == 0:
+            print(f"  Chunk {chunk_id} produced empty output -> skipped")
+            continue
+
         # Convert to PyTorch tensors
         X_chunk = torch.from_numpy(X_chunk_np).float()
         y_chunk = torch.from_numpy(y_chunk_np).float()
+
+        del X_chunk_np, y_chunk_np  # Free up memory
         
         # Save chunk as .pt
         torch.save((X_chunk, y_chunk), os.path.join(save_dir, f"chunk_{chunk_id}.pt"))
         
         start_idx += X_chunk.shape[0]
-        print(f"Chunk {chunk_id+1}/{n_chunks} saved with {X_chunk.shape[0]} samples.")
+        
+        del X_chunk, y_chunk  # Free up memory
+        
+
     print(f"Saved {n_chunks} chunks to {save_dir}.")
     print("You can later load them with torch.load for PyTorch usage.")
+
+

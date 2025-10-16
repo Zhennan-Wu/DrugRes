@@ -11,24 +11,14 @@ import pubchempy as pcp
 import coderdata_processing
 import importlib
 importlib.reload(coderdata_processing)
-from coderdata_processing import filter_biomarkers, filter_feature, data_attribute_check, preprocess_experiment_with_footprint, cat_drug_response_features, unify_feature_across_dataset, get_total_mutation_types, summarize_datasets, summarize_df_matrices, binarize_across_dfs, dip_data_across_dfs, get_cell_id_across_dfs, cat_drug_response_features_across_datasets, dip_experiments_across_dfs, visualize_responses_across_datasets, summarize_all_available_metrics, clean_experiments_across_dfs, visualize_sample_response_statistics, save_dfs_as_pt
+from coderdata_processing import filter_biomarkers, filter_feature, unify_feature_across_dataset, get_total_mutation_types, summarize_datasets, summarize_df_matrices, binarize_across_dfs,  get_cell_id_across_dfs, clean_experiments_across_dfs, save_dfs_as_pt
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
-def data_reformat(show_status=False):
+def clean_data(download=False, show_status=False):
     datasets = ["beataml", "bladder", "ccle", "colorectal", "ctrpv2", "fimm", "gcsi", "gdscv1", "gdscv2", "liver", "mpnst", "nci60", "pancreatic", "prism"]
-
-    data_path = '../data/Cancer/coderdata/'
-    for data_name in datasets:
-        cd.download(name=data_name, local_path=data_path)
-
-    loaded_datasets = {}
-    for data_name in datasets:
-        if show_status:
-            print(f"Loading dataset: {data_name}")
-        loaded_datasets[data_name] = cd.load(name=data_name, local_path=data_path)
 
     include_copy_number = True
     include_proteomics = True
@@ -42,7 +32,18 @@ def data_reformat(show_status=False):
         new_to_remove = ["bladder", "colorectal", "novartis", "pancreatic", "sarcoma"]
         to_remove = list(set(to_remove + new_to_remove))
 
-    selected_datasets = {x: loaded_datasets[x] for x in datasets if x not in to_remove}
+    datasets = [x for x in datasets if x not in to_remove]
+   
+    data_path = '../data/Cancer/coderdata/'
+    if download:
+        for data_name in datasets:
+            cd.download(name=data_name, local_path=data_path)
+
+    selected_datasets = {}
+    for data_name in datasets:
+        if show_status:
+            print(f"Loading dataset: {data_name}")
+        selected_datasets[data_name] = cd.load(name=data_name, local_path=data_path)
 
     unified_datasets = {}
     unified_datasets["transcriptomics"] = unify_feature_across_dataset(selected_datasets, feature="transcriptomics")
@@ -78,40 +79,18 @@ def data_reformat(show_status=False):
 
     metric = "fit_auc"
     experiments_dfs = clean_experiments_across_dfs(selected_datasets, metric=metric)
+    print("Data ready for reformat and store")
+    return experiments_dfs, drugs_ref_dfs, dim_reduced_dfs, unique_cell_ids_across_dfs
 
-    save_dfs_as_pt(
-    experiments_dfs,
+
+if __name__ == "__main__":
+    experiments_dfs, drugs_ref_dfs, dim_reduced_dfs, unique_cell_ids_across_dfs = clean_data(download=True)
+
+    save_dfs_as_pt(experiments_dfs,
     drugs_ref_dfs,
     dim_reduced_dfs,
     unique_cell_ids_across_dfs,
     features=["transcriptomics", "proteomics", "copy_number"],
     n_chunks=100,
-    save_dir=f"../data/pt_data/",
-    show_status=show_status
+    save_dir=f"../data/pt_data/"
     )
-
-    save_dfs_as_pt(
-    experiments_dfs,
-    drugs_ref_dfs,
-    dim_reduced_dfs,
-    unique_cell_ids_across_dfs,
-    features=["transcriptomics", "copy_number"],
-    n_chunks=100,
-    save_dir=f"../data/pt_data/",
-    show_status=show_status
-    )
-
-    save_dfs_as_pt(
-    experiments_dfs,
-    drugs_ref_dfs,
-    dim_reduced_dfs,
-    unique_cell_ids_across_dfs,
-    features=["transcriptomics"],
-    n_chunks=100,
-    save_dir=f"../data/pt_data/",
-    show_status=show_status
-    )
-
-
-if __name__ == "__main__":
-    data_reformat(show_status=False)
