@@ -106,10 +106,10 @@ def get_args():
                         help="momentum (default: 0)")
     parser.add_argument("--gamma", type=float, default=1e-3,
                         help="lr decay rate (default: 1e-3)")
-    parser.add_argument("--epoch", type=int, default=50,
-                        help="number of epochs (default: 50)")
-    parser.add_argument("--batch_size", type=int, default=100,
-                        help="batch size (default: 100)")
+    parser.add_argument("--epoch", type=int, default=51,
+                        help="number of epochs (default: 51)")
+    parser.add_argument("--batch_size", type=int, default=1000,
+                        help="batch size (default: 1000)")
     parser.add_argument("--world_size", type=int, default=torch.cuda.device_count())
     parser.add_argument('--device_ids', type=int, nargs='+',
                         help='list of CUDA devices (default: list(range(torch.cuda.device_count())))',
@@ -179,7 +179,7 @@ def run(rank, args):
         nc = 11030
         if not args.size == 1:
             raise NotImplementedError
-        data = torch.load("cell_mutations.pt")
+        data = torch.load("cell_drug_response_samples.pt")
         dataset = torch.utils.data.TensorDataset(data['X'], data['y'])
         training_data, test_data = torch.utils.data.random_split(
             dataset, [int(0.8*len(dataset)), len(dataset)-int(0.8*len(dataset))])

@@ -538,7 +538,7 @@ def filter_biomarkers(df_dict, data_size_ref, proportion=1e-2):
         if (sum(thres) >= 0.5*len(thres)):
             filtered_dfs[feature] = df
         else:
-            print(f"Feature {feature} is filtered out due to insufficient samples")
+            print(f"Feature {feature} is filtered out due to insufficient samples, more than {proportion*100}% samples required in at least 50% datasets.")
 
     return filtered_dfs
 
