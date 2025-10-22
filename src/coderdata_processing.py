@@ -139,9 +139,9 @@ def clean_experiments_across_dfs(dfs: dict, metric: str = 'aac'):
         A new dictionary with cleaned DataFrames.
     """
     if (metric in ["auc", "fit_auc"]):
-        thres = 0.9
+        thres = 1.
     elif (metric in ["aac", "fit_aac"]):
-        thres=0.05
+        thres=0.
     else:
         raise ValueError(f"Metric '{metric}' not recognized. Supported metrics: 'auc', 'fit_auc', 'aac', 'fit_aac'.")
     cleaned_dfs = {}
@@ -152,7 +152,12 @@ def clean_experiments_across_dfs(dfs: dict, metric: str = 'aac'):
             raise ValueError(f"Column '{column}' not found in DataFrame.")
 
         df.loc[:, column] = pd.to_numeric(df[column], errors='coerce')
-        cleaned_df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=[column])
+        cleaned_df = (
+            df.replace([np.inf, -np.inf], np.nan)
+            .infer_objects(copy=False)
+            .dropna(subset=[column])
+        )
+
         # cleaned_df = cleaned_df[cleaned_df[column].between(thres, 1-thres)]
         if (metric in ["auc", "fit_auc"]):
             cleaned_df = cleaned_df[cleaned_df[column] <= thres]
@@ -314,6 +319,42 @@ def summarize_df_matrices(dfs: dict):
     return summaries
 
 
+def unify_cell_ids_across_dfs(dfs: dict):
+    '''
+    Get all cell ids from DataFrames return by the Dataset feature
+    Args:
+        dfs (dict): A dictionary where keys are dataset names and values are Dataset.
+    
+    Returns:
+        dict: A dictionary where keys are dataset names and values are sets of cell ids.
+    '''
+    samples_in_datasets = {}
+    for _, dataset in dfs.items():
+        for name, data in dataset.items():
+            if name not in samples_in_datasets:
+                samples_in_datasets[name] = set()
+            samples_in_datasets[name].update(data.index.tolist())
+    
+    for feature, dataset in dfs.items():
+        for name, data in dataset.items():
+            all_samples = list(samples_in_datasets[name])
+            missing_samples = list(set(all_samples) - set(data.index.tolist()))
+            if (len(missing_samples) > 0):
+                print(f"Feature {feature}, Dataset {name}: Adding {len(missing_samples)} missing samples as part of total samples {len(all_samples)}.")
+                if (feature == "proteomics"):
+                    filling_df = pd.DataFrame(-30., index=missing_samples, columns=data.columns)
+                elif (feature == "copy_number"):
+                    filling_df = pd.DataFrame(2, index=missing_samples, columns=data.columns)
+                else:
+                    filling_df = pd.DataFrame(0, index=missing_samples, columns=data.columns)
+                if (feature == "mutations"):
+                    filling_df = pd.DataFrame(0, index=missing_samples, columns=data.columns)
+                dataset[name] = pd.concat([data, filling_df])
+            dataset[name] = dataset[name].reindex(index=all_samples)
+        dfs[feature] = dataset
+    return dfs
+
+
 def unify_feature_across_dataset(dfs: dict, feature: str, *args, **kwargs):
     """
     Get all columns from DataFrames return by the Dataset feature
@@ -323,6 +364,7 @@ def unify_feature_across_dataset(dfs: dict, feature: str, *args, **kwargs):
     """
     all_columns = set()
     df_dict_aligned = {}
+    
     if (feature == "transcriptomics"):
         sample_feature_dfs = {}
         for name, dataset in dfs.items():
@@ -331,7 +373,7 @@ def unify_feature_across_dataset(dfs: dict, feature: str, *args, **kwargs):
             all_columns.update(df.columns)
             sample_feature_dfs[name] = df
         df_dict_aligned = {
-            name: df.reindex(columns=all_columns)
+            name: df.reindex(columns=all_columns).fillna(0)
             for name, df in sample_feature_dfs.items()
         }
     elif (feature == "mutations"):
@@ -343,7 +385,7 @@ def unify_feature_across_dataset(dfs: dict, feature: str, *args, **kwargs):
             all_columns.update(df.columns)
             sample_feature_dfs[name] = df
         df_dict_aligned = {
-            name: df.reindex(columns=all_columns)
+            name: df.reindex(columns=all_columns).fillna(0)
             for name, df in sample_feature_dfs.items()
         }
     elif (feature == "proteomics"):
@@ -353,7 +395,7 @@ def unify_feature_across_dataset(dfs: dict, feature: str, *args, **kwargs):
             all_columns.update(df.columns)
             sample_feature_dfs[name] = df
         df_dict_aligned = {
-            name: df.reindex(columns=all_columns)
+            name: df.reindex(columns=all_columns).fillna(-30.)
             for name, df in sample_feature_dfs.items()
         }
     elif (feature == "copy_number"):
@@ -363,7 +405,7 @@ def unify_feature_across_dataset(dfs: dict, feature: str, *args, **kwargs):
             all_columns.update(df.columns)
             sample_feature_dfs[name] = df
         df_dict_aligned = {
-            name: df.reindex(columns=all_columns)
+            name: df.reindex(columns=all_columns).fillna(2)
             for name, df in sample_feature_dfs.items()
         }
     else:
@@ -464,15 +506,18 @@ def binarize_across_dfs(df_dict, feature: str):
     if (feature == "transcriptomics"):
         for name, df in df_dict.items():
             df = df.replace([np.inf, -np.inf], 0).fillna(0)
+            print(f"Binarizing transcriptomics data for {name} with shape {df.shape}")
             df_dict[name] = binarize(df, nbit=6, shift=0.0)
     elif (feature == "proteomics"):
         for name, df in df_dict.items():
-            df = df.replace([np.inf, -np.inf], 0).fillna(0)
+            df = df.replace([np.inf, -np.inf], 0).fillna(-30.)
+            print(f"Binarizing proteomics data for {name} with shape {df.shape}")
             df_dict[name] = binarize(df, nbit=6, shift=40.)
     elif (feature == "copy_number"):
         for name, df in df_dict.items():
             df = df.replace([np.inf, -np.inf], 2).fillna(2)
-            df_dict[name] = binarize(df, nbit=4, shift=0.0)
+            print(f"Binarizing copy number data for {name} with shape {df.shape}")
+            df_dict[name] = binarize(df, nbit=10, shift=0.0)
     else:
         print(f"Feature {feature} not supported for binarization")
     return df_dict
@@ -499,7 +544,168 @@ def filter_biomarkers(df_dict, data_size_ref, proportion=1e-2):
     return filtered_dfs
 
 
-def filter_feature(df_dict: dict, thres: float=1e-2):
+def plot_feature_variance_distribution(df_dict: dict, log_scale: bool = True, bins: int = 50):
+    """
+    Plot the distribution of feature variances for each dataset and overall,
+    with proper log10 binning if log_scale=True, and filtering out non-positive values.
+
+    Parameters
+    ----------
+    df_dict : dict
+        A dictionary where keys are feature group names and values are dictionaries
+        mapping dataset names to DataFrames.
+    log_scale : bool, optional
+        Whether to use log10 of variance for histogram binning.
+    bins : int, optional
+        Number of bins to use for the histogram.
+    """
+    for feature_group, datasets in df_dict.items():
+        print(f"📊 Plotting variance distribution for feature group: {feature_group}")
+        
+        overall_var_list = []
+        dataset_names = sorted(datasets.keys())
+
+        for dataset_name in dataset_names:
+            df = datasets[dataset_name]
+            vars_ = df.var(axis=0).dropna()
+
+            # Filter out non-positive variances (avoid log10(0) or log10(neg))
+            positive_vars = vars_[vars_ > 0]
+            n_removed = len(vars_) - len(positive_vars)
+            if n_removed > 0:
+                print(f"   ⚠️ {dataset_name}: Removed {n_removed} non-positive variances before log10 transform")
+
+            if positive_vars.empty:
+                print(f"   ⚠️ Skipping {feature_group} - {dataset_name}: no positive variances to plot")
+                continue
+
+            overall_var_list.append(positive_vars)
+
+            plot_vals = np.log10(positive_vars) if log_scale else positive_vars
+
+            plt.figure(figsize=(6, 4))
+            plt.hist(plot_vals, bins=bins, edgecolor='black')
+            xlabel = 'log10(Variance)' if log_scale else 'Variance'
+            plt.xlabel(xlabel)
+            plt.ylabel('Number of Features')
+            plt.title(f'{feature_group} - {dataset_name}')
+            plt.grid(axis='y', linestyle='--', alpha=0.5)
+            # ✅ Add percentile markers
+            percentiles = [30, 60, 90]
+            percentile_vals = np.percentile(plot_vals, percentiles)
+            for p, val in zip(percentiles, percentile_vals):
+                plt.axvline(val, color='red', linestyle='--')
+                plt.text(val, plt.ylim()[1]*0.9, f'{p}%', rotation=90,
+                        verticalalignment='top', horizontalalignment='right', color='red', fontsize=9)
+            plt.tight_layout()
+            plt.show()
+
+
+        # === Overall distribution ===
+        if overall_var_list:
+            overall_vars = pd.concat(overall_var_list, axis=1).max(axis=1).dropna()
+            overall_vars = overall_vars[overall_vars > 0]  # filter again
+
+            if not overall_vars.empty:
+                plot_vals = np.log10(overall_vars) if log_scale else overall_vars
+
+                plt.figure(figsize=(6, 4))
+                plt.hist(plot_vals, bins=bins, edgecolor='black')
+                xlabel = 'log10(Variance)' if log_scale else 'Variance'
+                plt.xlabel(xlabel)
+                plt.ylabel('Number of Features')
+                plt.title(f'{feature_group} - overall (max across datasets)')
+                plt.grid(axis='y', linestyle='--', alpha=0.5)
+                # ✅ Add percentile markers
+                percentiles = [30, 60, 90]
+                percentile_vals = np.percentile(plot_vals, percentiles)
+                for p, val in zip(percentiles, percentile_vals):
+                    plt.axvline(val, color='red', linestyle='--')
+                    plt.text(val, plt.ylim()[1]*0.9, f'{p}%', rotation=90,
+                            verticalalignment='top', horizontalalignment='right', color='red', fontsize=9)
+                plt.tight_layout()
+                plt.show()
+            else:
+                print(f"⚠️ Skipping {feature_group} - overall: no positive variances to plot")
+        else:
+            print(f"⚠️ Skipping {feature_group} - overall: no datasets with positive variances")
+
+
+def count_features_by_variance_range(df_dict: dict, ranges: list):
+    """
+    Count the number of features whose variances fall into each specified range,
+    including below_min and above_max bins.
+
+    Parameters
+    ----------
+    df_dict : dict
+        A dictionary where keys are feature group names and values are dictionaries
+        mapping dataset names to DataFrames.
+    ranges : list of tuple
+        List of (low, high) tuples specifying variance ranges, sorted in ascending order.
+
+    Returns
+    -------
+    dict
+        A nested dictionary with structure:
+        {
+            feature_group: {
+                dataset_name: {
+                    "below_min": count,
+                    "range_(low,high)": count,
+                    ...,
+                    "above_max": count
+                },
+                "overall": {...}
+            }
+        }
+    """
+    if not ranges:
+        raise ValueError("ranges list must not be empty")
+
+    counts = {}
+    min_low = min(low for low, _ in ranges)
+    max_high = max(high for _, high in ranges)
+
+    for feature_group, datasets in df_dict.items():
+        group_counts = {}
+        overall_var_list = []
+
+        for dataset_name, df in datasets.items():
+            vars_ = df.var(axis=0)
+            overall_var_list.append(vars_)
+            dataset_counts = {}
+
+            # Below min
+            dataset_counts["below_min"] = int((vars_ < min_low).sum())
+
+            # Each specified range
+            for low, high in ranges:
+                count_in_range = ((vars_ >= low) & (vars_ < high)).sum()
+                dataset_counts[f"range_({low},{high})"] = int(count_in_range)
+
+            # Above max
+            dataset_counts["above_max"] = int((vars_ >= max_high).sum())
+
+            group_counts[dataset_name] = dataset_counts
+
+        # Overall (across datasets — max variance per feature)
+        overall_vars = pd.concat(overall_var_list, axis=1).max(axis=1)
+        overall_counts = {}
+
+        overall_counts["below_min"] = int((overall_vars < min_low).sum())
+        for low, high in ranges:
+            count_in_range = ((overall_vars >= low) & (overall_vars < high)).sum()
+            overall_counts[f"range_({low},{high})"] = int(count_in_range)
+        overall_counts["above_max"] = int((overall_vars >= max_high).sum())
+
+        group_counts["overall"] = overall_counts
+        counts[feature_group] = group_counts
+
+    return counts
+
+
+def filter_feature(df_dict: dict, log_thres: float=-1.0):
     """
     Filters out columns in DataFrames based on variance thresholds.
     
@@ -520,10 +726,15 @@ def filter_feature(df_dict: dict, thres: float=1e-2):
         vars_list = [dataset.var() for dataset in df.values()]
         vars_df = pd.concat(vars_list, axis=1)
         max_var_per_col = vars_df.max(axis=1)
-        selected_cols = max_var_per_col[max_var_per_col > thres].index.tolist()
+        relative_log_vars = np.log10(0.05 * max_var_per_col.median() + 1e-8)
+        print(f"relative_log_vars for {feature}: {relative_log_vars}, user defined log_thres: {log_thres}")
+        selected_cols = max_var_per_col[np.log10(max_var_per_col + 1e-8) > log_thres].index.tolist()
         print(f"Feature {feature}: selected {len(selected_cols)} out of {vars_df.shape[0]} features")
-        for dataset, value in df.items():
-            filtered_dfs[feature][dataset] = value[selected_cols]
+        if len(selected_cols) == 0:
+            print(f"Skipped: No features selected for {feature} after filtering with threshold {log_thres}.")
+        else:
+            for dataset, value in df.items():
+                filtered_dfs[feature][dataset] = value[selected_cols]
     return filtered_dfs
 
 
@@ -666,51 +877,6 @@ def repre_drug(drug_ids, drug_embeds, d_id):
     return embed
 
 
-def preprocess_experiment(experiments, drug_ids, drug_embeds, filtered_dfs, drug_target:str=None, show_status:bool=True):
-    """
-    Preprocess experiment data by extracting features, drug representations, and responses.
-    Parameters
-    ----------
-    experiments : pd.DataFrame
-        DataFrame containing experiment data with columns 'improve_sample_id', 'improve_drug_id', and 'dose_response_value'.
-    drug_ids : list
-        List of drug IDs corresponding to the drug embeddings.
-    drug_embeds : np.ndarray
-        Array of drug embeddings.
-    filtered_dfs : dict
-        Dictionary of DataFrames containing features, keyed by feature type.
-    drug_target : str, optional
-        Specific drug ID to filter experiments. If None, all drugs are processed.
-    show_status : bool, optional
-        Whether to print status updates during processing.
-    """
-    sample_ids_dict = {}
-    feature_dict = {}
-    drugf = []
-    resp = []
-    for index, row in experiments.iterrows():
-        if drug_target is None or str(row["improve_drug_id"]) == str(drug_target):
-            improve_sample_id = row["improve_sample_id"]
-            for key, value in filtered_dfs.items():
-                feature, id = extract_row(value, improve_sample_id)
-                if key not in sample_ids_dict:
-                    sample_ids_dict[key] = []
-                if key not in feature_dict:
-                    feature_dict[key] = []
-                feature_dict[key].append(feature)
-                sample_ids_dict[key].append(id)
-
-            drug_id = row["improve_drug_id"]
-            drug = repre_drug(drug_ids, drug_embeds, drug_id)
-            drugf.append(drug)
-
-            resp.append(row["dose_response_value"])
-        if index % 1000 == 0 and show_status:
-            print(f"Processed {index+1} samples")
-            print(f"Selected {len(resp)} samples")
-    return feature_dict, sample_ids_dict, drugf, resp
-
-
 def get_morgan_fingerprint(smiles, radius=2, n_bits=2048):
     mol = Chem.MolFromSmiles(smiles)  # Convert SMILES to molecule
     if mol is None:
@@ -745,6 +911,38 @@ def get_drug_fingerprints(drug_id, drugs_ref):
         print(f"Invalid SMILES for drug ID {drug_id}")
         return None
     return np.array(fingerprint)
+
+
+def create_binary_cell_dfs(cell_feature_dfs):
+    binary_cell_dfs = {}
+    gene_mappings = {}
+    for feature, datasets in cell_feature_dfs.items():
+        for name, data in datasets.items():
+            sample_ids = data.index.tolist()
+            gene_map = data.columns.tolist()
+            feature_encoding = np.stack([
+                np.concatenate([
+                    np.ravel(row[col]) if isinstance(row[col], np.ndarray) else np.array([row[col]])
+                    for col in data.columns
+                ])
+                for _, row in data.iterrows()
+            ])
+            print(f"Dataset {name}, Feature {feature}: shape {feature_encoding.shape}")
+
+            if name not in binary_cell_dfs:
+                binary_cell_dfs[name] = pd.DataFrame(
+                    index=sample_ids
+                )
+                binary_cell_dfs[name]["improve_sample_id"] = sample_ids
+            binary_cell_dfs[name][feature] = pd.Series(list(feature_encoding), index=sample_ids)
+
+            if feature not in gene_mappings:
+                gene_mappings[feature] = gene_map
+            else:
+                if (gene_mappings[feature] != gene_map):
+                    raise ValueError(f"Gene mapping mismatch for dataset {name} and feature {feature}, should have unified mapping across datasets.") 
+
+    return binary_cell_dfs, gene_mappings
 
 
 def preprocess_experiment_with_footprint(experiments_dfs, drugs_ref_dfs, filtered_dfs, drug_target:str=None, show_status:bool=True):
@@ -860,6 +1058,43 @@ def cat_drug_response_features_across_datasets(features_dfs:dict, labels_dfs: di
     return np.concatenate(training_datas, axis=0), np.concatenate(training_labels, axis=0)
 
 
+def cat_cell_features_across_datasets(features_dfs:dict, feature_list: list=None, show_status:bool=False) -> np.ndarray:
+    """
+    Concatenate features from different omics data types across multiple datasets.
+    Parameters
+    ----------
+    features : dict
+        Dictionary of features, where keys are dataset names and values are dictionaries of feature types and numpy arrays.
+    labels : dict
+        Dictionary where keys are dataset names and values are lists of labels corresponding to the samples.
+    cell_id_ref : dict
+        Dictionary mapping feature types to lists of sample IDs.
+    feature_list : list
+        List of feature types to concatenate.
+    Returns
+    -------
+    np.ndarray
+        Concatenated feature array and corresponding labels.
+    """
+    training_datas = []
+    if feature_list is None:
+        feature_list = set()
+        for name, data in features_dfs.items():
+            feature_list.update(data.columns.tolist())
+        feature_list = list(feature_list)
+        feature_list.remove("improve_sample_id")
+    for name, data in features_dfs.items():
+        X = np.hstack([
+            np.vstack(data[col].to_numpy()) if isinstance(data[col].iloc[0], np.ndarray)
+            else data[[col]].to_numpy()
+            for col in feature_list
+        ])
+        training_datas.append(X)
+        if show_status:
+            print(f"Dataset '{name}': {data.shape}")
+    return np.concatenate(training_datas, axis=0)
+
+
 def cat_drug_response_features(features:dict, labels: list, cell_id_ref: dict, feature_list: list, show_status:bool=False) -> np.ndarray:
     """
     Concatenate features from different omics data types.
@@ -899,7 +1134,7 @@ def cat_drug_response_features(features:dict, labels: list, cell_id_ref: dict, f
     return training_data, training_label
 
 
-def cat_cell_features(features:dict, sample_size: int, feature_list: list=None, show_status:bool=False) -> np.ndarray:
+def cat_cell_features(features:dict, feature_list: list=None, show_status:bool=False) -> np.ndarray:
     """
     Concatenate features from different omics data types.
     Parameters

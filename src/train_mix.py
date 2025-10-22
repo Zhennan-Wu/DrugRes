@@ -23,8 +23,10 @@ from torchvision.transforms import ToTensor
 from torchvision.datasets import MNIST, FashionMNIST
 from torchvision.utils import make_grid, save_image
 
-from model import DBM
+from gDBM import DBM
 from utils import binarize, generate_id, visualize_curve
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 def train(rank, args, model, optimizer, scheduler,
@@ -33,11 +35,12 @@ def train(rank, args, model, optimizer, scheduler,
     energies_per_batch = []
     loss_per_batch = []
     with torch.autograd.set_detect_anomaly(detect_anomaly):
-        for step, (x, y) in enumerate(dataloader):
+        for _, (x, y) in enumerate(dataloader):
             v = x.to(next(model.parameters()).device)
 
             optimizer.zero_grad()
             loss = model(v)
+            torch.autograd.set_detect_anomaly(True)
             loss.mean().backward()
             optimizer.step()
             scheduler.step()
@@ -58,6 +61,7 @@ def train(rank, args, model, optimizer, scheduler,
                              make_grid(v_rec_rand[:8], 8, pad_value=1.0),
                              epoch)
     return np.array(energies_per_batch).flatten(), np.array(loss_per_batch).flatten()
+
 
 def valid(rank, args, model, dataloader, writer, epoch):
     model.eval()
@@ -92,8 +96,8 @@ def get_args():
     parser.add_argument('--seed', type=int, help='random seed (default: 0)', default=0)
     parser.add_argument("--dataset", type=str, choices=["MNIST", "FashionMNIST"],
                         default="MNIST", help='dataset to be used (default: MNIST)')
-    parser.add_argument("--bits", type=int, default=1, choices=[1, 8],
-                        help="number of bits (default: 1)")
+    parser.add_argument("--discrete_indices", type=list, default=None,
+                        help="discrete indices start-end pairs")
     parser.add_argument("--nh", type=list, default=[400, 256],
                         help="number of hidden units")
     parser.add_argument("--size", type=int, default=28,
@@ -154,8 +158,6 @@ def run(rank, args):
         args.device_ids = list(range(torch.cuda.device_count()))
 
     transform = [torchvision.transforms.ToTensor()]
-    if args.bits == 1:
-        transform.append(torchvision.transforms.Lambda(binarize))
     transform = torchvision.transforms.Compose(transform)
 
     # Dataset
@@ -201,7 +203,7 @@ def run(rank, args):
 
     # Model
     nh = args.nh
-    model = DBM(args.size, nc, nh, args.bits, args.L).to(rank)
+    model = DBM(args.size, nc, nh, args.discrete_indices, args.L).to(rank)
 
     model = DDP(model, device_ids=[rank]) if args.distributed \
             else nn.DataParallel(model, device_ids=args.device_ids)
@@ -213,7 +215,7 @@ def run(rank, args):
 
     if args.log_dir is None:
         run_id = generate_id(8)
-        log_dir = f"./runs/{args.dataset}-bits:{args.bits}-L:{args.L}-nh:{nh}-lr:{args.lr}-momentum:{args.momentum}-bs:{args.batch_size}-gamma:{args.gamma}-epoch:{args.epoch}-seed:{args.seed}-{run_id}"
+        log_dir = f"./runs/{args.dataset}-L:{args.L}-nh:{nh}-lr:{args.lr}-momentum:{args.momentum}-bs:{args.batch_size}-gamma:{args.gamma}-epoch:{args.epoch}-seed:{args.seed}-{run_id}"
     else:
         log_dir = args.log_dir
 
@@ -251,14 +253,6 @@ def run(rank, args):
 
     if args.distributed:
         cleanup()
-
-
-def load_model(log_dir, device, *args):
-    model = DBM(args.size, args.nc, args.nh, args.bits, args.L).to(device)
-    checkpoint_path = os.path.join(log_dir, args.model_path, f"model-{args.epoch}.pt")
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
-    model.eval()
-    return model
 
 
 if __name__ == "__main__":
