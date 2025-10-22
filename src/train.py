@@ -45,18 +45,18 @@ def train(rank, args, model, optimizer, scheduler,
             loss_per_batch.append(loss.detach().cpu().numpy())
             energies_per_batch.append(model.module.marginal_energy(v).detach().cpu().numpy())
 
-        if rank == 0:
-            writer.add_image("ground_truth/train",
-                             make_grid(v[:8], 8, pad_value=1.0),
-                             epoch)
+        # if rank == 0:
+        #     writer.add_image("ground_truth/train",
+        #                      make_grid(v[:8], 8, pad_value=1.0),
+        #                      epoch)
 
-            v_rec_mode, v_rec_rand = model.module.reconstruct(v)
-            writer.add_image("reconstruction/train/mode",
-                             make_grid(v_rec_mode[:8], 8, pad_value=1.0),
-                             epoch)
-            writer.add_image("reconstruction/train/rand",
-                             make_grid(v_rec_rand[:8], 8, pad_value=1.0),
-                             epoch)
+        #     v_rec_mode, v_rec_rand = model.module.reconstruct(v)
+        #     writer.add_image("reconstruction/train/mode",
+        #                      make_grid(v_rec_mode[:8], 8, pad_value=1.0),
+        #                      epoch)
+        #     writer.add_image("reconstruction/train/rand",
+        #                      make_grid(v_rec_rand[:8], 8, pad_value=1.0),
+        #                      epoch)
     return np.array(energies_per_batch).flatten(), np.array(loss_per_batch).flatten()
 
 def valid(rank, args, model, dataloader, writer, epoch):
@@ -67,49 +67,49 @@ def valid(rank, args, model, dataloader, writer, epoch):
 
         v_rec_mode, v_rec_rand = model.module.reconstruct(v)
 
-        if rank == 0:
-            writer.add_image("ground_truth/test",
-                             make_grid(v[:8], 8, pad_value=1.0),
-                             epoch)
+        # if rank == 0:
+        #     writer.add_image("ground_truth/test",
+        #                      make_grid(v[:8], 8, pad_value=1.0),
+        #                      epoch)
 
-        if rank == 0:
-            writer.add_image("reconstruction/test/mode",
-                             make_grid(v_rec_mode[:8], 8, pad_value=1.0),
-                             epoch)
-            writer.add_image("reconstruction/test/rand",
-                             make_grid(v_rec_rand[:8], 8, pad_value=1.0),
-                             epoch)
+        # if rank == 0:
+        #     writer.add_image("reconstruction/test/mode",
+        #                      make_grid(v_rec_mode[:8], 8, pad_value=1.0),
+        #                      epoch)
+        #     writer.add_image("reconstruction/test/rand",
+        #                      make_grid(v_rec_rand[:8], 8, pad_value=1.0),
+        #                      epoch)
 
-    if rank == 0:
-        v_mode, v_rand = model.module.sample(64)
-        writer.add_image("sample/mode", make_grid(v_mode, 8, pad_value=1.0), epoch)
-        writer.add_image("sample/random", make_grid(v_rand, 8, pad_value=1.0), epoch)
+    # if rank == 0:
+    #     v_mode, v_rand = model.module.sample(64)
+    #     writer.add_image("sample/mode", make_grid(v_mode, 8, pad_value=1.0), epoch)
+    #     writer.add_image("sample/random", make_grid(v_rand, 8, pad_value=1.0), epoch)
 
 
 def get_args():
     parser = argparse.ArgumentParser(description="Deep Boltzman Machine")
     parser.add_argument('--num_workers', type=int, help='number of data loading workers', default=8)
     parser.add_argument('--seed', type=int, help='random seed (default: 0)', default=0)
-    parser.add_argument("--dataset", type=str, choices=["MNIST", "FashionMNIST"],
-                        default="MNIST", help='dataset to be used (default: MNIST)')
+    parser.add_argument("--dataset", type=str, choices=["MNIST", "FashionMNIST", "Mutations"],
+                        default="Mutations", help='dataset to be used (default: Mutations)')
     parser.add_argument("--bits", type=int, default=1, choices=[1, 8],
                         help="number of bits (default: 1)")
-    parser.add_argument("--nh", type=list, default=[400, 256],
+    parser.add_argument("--nh", type=list, default=[4000, 1600, 400],
                         help="number of hidden units")
-    parser.add_argument("--size", type=int, default=28,
-                        help="image size (default: 28)")
-    parser.add_argument("--L", type=int, default=2,
-                        help="number of layers (default: 2)")
+    parser.add_argument("--size", type=int, default=1,
+                        help="image size (default: 1)")
+    parser.add_argument("--L", type=int, default=3,
+                        help="number of layers (default: 3)")
     parser.add_argument("--lr", type=float, default=1e-2,
                         help="learning rate (default: 1e-2)")
     parser.add_argument("--momentum", type=float, default=0,
                         help="momentum (default: 0)")
     parser.add_argument("--gamma", type=float, default=1e-3,
                         help="lr decay rate (default: 1e-3)")
-    parser.add_argument("--epoch", type=int, default=500,
-                        help="number of epochs (default: 500)")
-    parser.add_argument("--batch_size", type=int, default=1000,
-                        help="batch size (default: 1000)")
+    parser.add_argument("--epoch", type=int, default=50,
+                        help="number of epochs (default: 50)")
+    parser.add_argument("--batch_size", type=int, default=100,
+                        help="batch size (default: 100)")
     parser.add_argument("--world_size", type=int, default=torch.cuda.device_count())
     parser.add_argument('--device_ids', type=int, nargs='+',
                         help='list of CUDA devices (default: list(range(torch.cuda.device_count())))',
@@ -175,6 +175,14 @@ def run(rank, args):
                                      transform=transform)
         test_data = FashionMNIST("dataset", train=False, download=True,
                                  transform=transform)
+    elif args.dataset == "Mutations":
+        nc = 11030
+        if not args.size == 1:
+            raise NotImplementedError
+        data = torch.load("cell_mutations.pt")
+        dataset = torch.utils.data.TensorDataset(data['X'], data['y'])
+        training_data, test_data = torch.utils.data.random_split(
+            dataset, [int(0.8*len(dataset)), len(dataset)-int(0.8*len(dataset))])
     else:
         raise NotImplementedError
 

@@ -1,4 +1,3 @@
-
 import numbers
 import os
 from os import name
@@ -1077,6 +1076,7 @@ def cat_cell_features_across_datasets(features_dfs:dict, feature_list: list=None
         Concatenated feature array and corresponding labels.
     """
     training_datas = []
+    training_labels = []
     if feature_list is None:
         feature_list = set()
         for name, data in features_dfs.items():
@@ -1090,9 +1090,10 @@ def cat_cell_features_across_datasets(features_dfs:dict, feature_list: list=None
             for col in feature_list
         ])
         training_datas.append(X)
+        training_labels.append(data["improve_sample_id"].to_numpy().reshape(X.shape[0], 1))
         if show_status:
             print(f"Dataset '{name}': {data.shape}")
-    return np.concatenate(training_datas, axis=0)
+    return np.concatenate(training_datas, axis=0), np.concatenate(training_labels, axis=0)
 
 
 def cat_drug_response_features(features:dict, labels: list, cell_id_ref: dict, feature_list: list, show_status:bool=False) -> np.ndarray:
