@@ -6,6 +6,7 @@ from torchvision.io import write_jpeg
 import os
 import matplotlib.pyplot as plt
 import numpy as np
+from torch.utils.tensorboard import SummaryWriter
 
 
 def int2bit(x, bits=8):
@@ -38,38 +39,41 @@ def binarize(x):
 def generate_id(n):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=n))
 
-def visualize_curve(energy_mean, energy_std, loss_mean, loss_std, epoch, log_dir):
+def visualize_curve(energy_mean, energy_std, loss_mean, loss_std, epoch, log_dir, writer=None):
     epochs = np.arange(1, len(energy_mean) + 1)
 
-    plt.figure(figsize=(8, 5), dpi=150)
-    plt.title("Energy and Loss Curves", fontsize=14, fontweight='bold')
-    plt.xlabel("Epoch", fontsize=12)
-    plt.ylabel("Value", fontsize=12)
+    # --- Plot setup ---
+    fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
+    ax.set_title("Energy and Loss Curves", fontsize=14, fontweight='bold')
+    ax.set_xlabel("Epoch", fontsize=12)
+    ax.set_ylabel("Value", fontsize=12)
 
     # Plot energy curve with shaded std
-    plt.plot(epochs, energy_mean, color='tab:blue', label='Energy', linewidth=2)
-    plt.fill_between(epochs,
-                     energy_mean - energy_std,
-                     energy_mean + energy_std,
-                     color='tab:blue',
-                     alpha=0.2)
+    ax.plot(epochs, energy_mean, color='tab:blue', label='Energy', linewidth=2)
+    ax.fill_between(epochs,
+                    energy_mean - energy_std,
+                    energy_mean + energy_std,
+                    color='tab:blue',
+                    alpha=0.2)
 
     # Plot loss curve with shaded std
-    plt.plot(epochs, loss_mean, color='tab:orange', label='Loss', linewidth=2)
-    plt.fill_between(epochs,
-                     loss_mean - loss_std,
-                     loss_mean + loss_std,
-                     color='tab:orange',
-                     alpha=0.2)
+    ax.plot(epochs, loss_mean, color='tab:orange', label='Loss', linewidth=2)
+    ax.fill_between(epochs,
+                    loss_mean - loss_std,
+                    loss_mean + loss_std,
+                    color='tab:orange',
+                    alpha=0.2)
 
-    # Grid & legend
-    plt.grid(True, linestyle='--', alpha=0.5)
-    plt.legend(fontsize=10, loc='best', frameon=True, fancybox=True, shadow=True)
+    ax.grid(True, linestyle='--', alpha=0.5)
+    ax.legend(fontsize=10, loc='best', frameon=True, fancybox=True, shadow=True)
+    fig.tight_layout()
 
-    # Tight layout
-    plt.tight_layout()
-
-    # Save figure
+    # --- Save as image ---
     save_path = os.path.join(log_dir, f"energy_curve_epoch_{epoch:04d}.png")
-    plt.savefig(save_path, dpi=300)
-    plt.close()
+    fig.savefig(save_path, dpi=300)
+
+    # --- Log to TensorBoard ---
+    if writer is not None:
+        writer.add_figure("Energy_Loss_Curves", fig, global_step=epoch)
+
+    plt.close(fig)

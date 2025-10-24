@@ -94,20 +94,20 @@ def get_args():
                         default="Mutations", help='dataset to be used (default: Mutations)')
     parser.add_argument("--bits", type=int, default=1, choices=[1, 8],
                         help="number of bits (default: 1)")
-    parser.add_argument("--nh", type=list, default=[4000, 1600, 400],
+    parser.add_argument("--nh", type=int, nargs='+', default=[3600, 2500],
                         help="number of hidden units")
     parser.add_argument("--size", type=int, default=1,
                         help="image size (default: 1)")
-    parser.add_argument("--L", type=int, default=3,
-                        help="number of layers (default: 3)")
+    parser.add_argument("--L", type=int, default=2,
+                        help="number of layers (default: 2)")
     parser.add_argument("--lr", type=float, default=1e-2,
                         help="learning rate (default: 1e-2)")
     parser.add_argument("--momentum", type=float, default=0,
                         help="momentum (default: 0)")
     parser.add_argument("--gamma", type=float, default=1e-3,
                         help="lr decay rate (default: 1e-3)")
-    parser.add_argument("--epoch", type=int, default=51,
-                        help="number of epochs (default: 51)")
+    parser.add_argument("--epoch", type=int, default=1000,
+                        help="number of epochs (default: 1000)")
     parser.add_argument("--batch_size", type=int, default=1000,
                         help="batch size (default: 1000)")
     parser.add_argument("--world_size", type=int, default=torch.cuda.device_count())
@@ -176,7 +176,7 @@ def run(rank, args):
         test_data = FashionMNIST("dataset", train=False, download=True,
                                  transform=transform)
     elif args.dataset == "Mutations":
-        nc = 11030
+        nc = 4801
         if not args.size == 1:
             raise NotImplementedError
         data = torch.load("cell_drug_response_samples.pt")
@@ -253,7 +253,7 @@ def run(rank, args):
         # Save model
         if rank == 0 and epoch % 10 == 0:
             torch.save(model.state_dict(), os.path.join(log_dir, args.model_path, f"model-{epoch}.pt"))
-            visualize_curve(np.array(energies_mean), np.array(energies_std), np.array(losses_mean), np.array(losses_std), epoch, log_dir)
+            visualize_curve(np.array(energies_mean), np.array(energies_std), np.array(losses_mean), np.array(losses_std), epoch, log_dir, writer)
 
     writer.close()
 

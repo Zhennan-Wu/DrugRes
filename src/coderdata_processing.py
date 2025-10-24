@@ -346,8 +346,6 @@ def unify_cell_ids_across_dfs(dfs: dict):
                     filling_df = pd.DataFrame(2, index=missing_samples, columns=data.columns)
                 else:
                     filling_df = pd.DataFrame(0, index=missing_samples, columns=data.columns)
-                if (feature == "mutations"):
-                    filling_df = pd.DataFrame(0, index=missing_samples, columns=data.columns)
                 dataset[name] = pd.concat([data, filling_df])
             dataset[name] = dataset[name].reindex(index=all_samples)
         dfs[feature] = dataset
@@ -721,7 +719,6 @@ def filter_feature(df_dict: dict, log_thres: float=-1.0):
     """
     filtered_dfs = {}
     for feature, df in df_dict.items():
-        filtered_dfs[feature] = {}
         vars_list = [dataset.var() for dataset in df.values()]
         vars_df = pd.concat(vars_list, axis=1)
         max_var_per_col = vars_df.max(axis=1)
@@ -732,6 +729,7 @@ def filter_feature(df_dict: dict, log_thres: float=-1.0):
         if len(selected_cols) == 0:
             print(f"Skipped: No features selected for {feature} after filtering with threshold {log_thres}.")
         else:
+            filtered_dfs[feature] = {}
             for dataset, value in df.items():
                 filtered_dfs[feature][dataset] = value[selected_cols]
     return filtered_dfs
@@ -848,11 +846,9 @@ def extract_row(df_ref, sample_id):
         feature = df_ref.loc[sample_id].to_numpy()
         if isinstance(feature, numbers.Number):
             feature[np.isnan(feature)] = 0
-        id = sample_id
     else:
-        feature = np.zeros((df_ref.shape[1],))   
-        id = -1
-    return feature, id
+        feature = None
+    return feature
 
 
 def repre_drug(drug_ids, drug_embeds, d_id):
@@ -969,15 +965,16 @@ def preprocess_experiment_with_footprint(experiments_dfs, drugs_ref_dfs, filtere
         drugs_ref = drugs_ref_dfs[name]
         if show_status:
             print(f"Processing dataset: {name} with {len(experiments)} experiments")
+        incomplete_status = False
         for index, row in experiments.iterrows():
+            incomplete_status = False
             if drug_target is None or str(row["improve_drug_id"]) == str(drug_target):
                 footprint = get_drug_fingerprints(row["improve_drug_id"], drugs_ref)
                 if "fingerprint" not in feature_dict[name]:
                     feature_dict[name]["fingerprint"] = []
                 if footprint is None:
                     print(f"Skipping experiment {index} with drug ID {row['improve_drug_id']} due to invalid SMILES")
-
-                    continue
+                    incomplete_status = True
                 
                 feature_dict[name]["fingerprint"].append(footprint)
 
@@ -987,12 +984,22 @@ def preprocess_experiment_with_footprint(experiments_dfs, drugs_ref_dfs, filtere
                 feature_dict[name]["improve_sample_id"].append(improve_sample_id)
                 for key, df in filtered_dfs.items():
                     value = df[name]
-                    feature, id = extract_row(value, improve_sample_id)
+                    feature = extract_row(value, improve_sample_id)
+                    if feature is None:
+                        print(f"Skipping experiment {index} with sample ID {improve_sample_id} due to missing features in {key}")
+                        incomplete_status = True
                     if key not in feature_dict[name]:
                         feature_dict[name][key] = []
                     feature_dict[name][key].append(feature)
 
                 response_dict[name].append(row["dose_response_value"])
+                if incomplete_status:
+                    # Remove the last added entries due to incomplete data
+                    feature_dict[name]["fingerprint"].pop()
+                    feature_dict[name]["improve_sample_id"].pop()
+                    for key in filtered_dfs.keys():
+                        feature_dict[name][key].pop()
+                    response_dict[name].pop()
         if show_status:
             print(f"Finished processing dataset: {name} with {len(response_dict[name])} selected samples")
     return feature_dict, response_dict
@@ -1022,7 +1029,7 @@ def extract_data_position(feature_list, features, cell_id_ref):
     return indices
 
 
-def cat_drug_response_features_across_datasets(features_dfs:dict, labels_dfs: dict, cell_id_ref_dfs: dict, feature_list: list, show_status:bool=False) -> np.ndarray:
+def cat_drug_response_features_across_datasets(features_dfs:dict, labels_dfs: dict, feature_list: list, show_status:bool=False) -> np.ndarray:
     """
     Concatenate features from different omics data types across multiple datasets.
     Parameters
@@ -1043,17 +1050,16 @@ def cat_drug_response_features_across_datasets(features_dfs:dict, labels_dfs: di
     training_datas = []
     training_labels = []
     for name, features in features_dfs.items():
-        labels = labels_dfs[name]
-        cell_id_ref = cell_id_ref_dfs[name]
-        data, label = cat_drug_response_features(features, labels, cell_id_ref, feature_list)
+        labels = np.array(labels_dfs[name])
+        data = cat_drug_response_features(features, feature_list)
         if show_status:
             print(f"Dataset '{name}': {data.shape}")
-        if data.size == 0 or label.size == 0:
+        if data.size == 0 or labels.size == 0:
             if show_status:
                 print(f"Warning: Dataset '{name}' has no valid samples after feature extraction. Skipping.")
             continue
         training_datas.append(data)
-        training_labels.append(label)
+        training_labels.append(labels)
     return np.concatenate(training_datas, axis=0), np.concatenate(training_labels, axis=0)
 
 
@@ -1096,7 +1102,7 @@ def cat_cell_features_across_datasets(features_dfs:dict, feature_list: list=None
     return np.concatenate(training_datas, axis=0), np.concatenate(training_labels, axis=0)
 
 
-def cat_drug_response_features(features:dict, labels: list, cell_id_ref: dict, feature_list: list, show_status:bool=False) -> np.ndarray:
+def cat_drug_response_features(features:dict, feature_list: list, show_status:bool=False) -> np.ndarray:
     """
     Concatenate features from different omics data types.
     Parameters
@@ -1114,28 +1120,18 @@ def cat_drug_response_features(features:dict, labels: list, cell_id_ref: dict, f
     np.ndarray
         Concatenated feature array and corresponding labels.
     """
-    training_data = []
-    training_label = []
-    sample_indices = extract_data_position(feature_list, features, cell_id_ref)
-    for s_id in sample_indices:
-        training_label.append(labels[s_id])
-        cell_features = []
-        for feature in feature_list:
-            if feature in features:
-                if isinstance(features[feature][s_id], np.ndarray):
-                    cell_features.extend(features[feature][s_id])
-                else:
-                    cell_features.append(features[feature][s_id])
-            else:
-                raise KeyError(f"Feature '{feature}' not found in features dictionary.")
-        cell_features.append(features["fingerprint"][s_id])
-        training_data.append(np.concatenate(cell_features, axis=0))
-    training_data = np.array(training_data)
-    training_label = np.array(training_label)
-    return training_data, training_label
+    cell_features = []
+    for feature in feature_list:
+        if feature in features:
+            cell_features.append(np.array(features[feature]))
+        else:
+            raise KeyError(f"Feature '{feature}' not found in features dictionary.")
+    cell_features.append(np.array(features["fingerprint"]))
+    training_data = np.concatenate(cell_features, axis=1)
+    return training_data
 
 
-def cat_cell_features(features:dict, feature_list: list=None, show_status:bool=False) -> np.ndarray:
+def cat_cell_features(features:dict, sample_size: int, feature_list: list=None, show_status:bool=False) -> np.ndarray:
     """
     Concatenate features from different omics data types.
     Parameters
@@ -1187,13 +1183,24 @@ def preprocess_cell_line(cell_id_ref, filtered_dfs, feature_list):
     cell_ids = set(cell_id_ref[feature_list[0]])
     for feature in feature_list[1:]:
         cell_ids = cell_ids.intersection(set(cell_id_ref[feature]))
+    
+    incomplete_status = False
     for improve_sample_id in cell_ids:
+        incomplete_status = False
         improve_sample_id = int(improve_sample_id)
         for key, value in filtered_dfs.items():
-            feature, _ = extract_row(value, improve_sample_id)
+            feature = extract_row(value, improve_sample_id)
+            if feature is None:
+                print(f"Skipping sample ID {improve_sample_id} due to missing features in {key}")
+                incomplete_status = True
             if key not in feature_dict:
                 feature_dict[key] = []
             feature_dict[key].append(feature)
+        if incomplete_status:
+            # Remove the last added entries due to incomplete data
+            for key in filtered_dfs.keys():
+                feature_dict[key].pop()
+            cell_ids.remove(improve_sample_id)
 
     X = cat_cell_features(feature_dict, len(list(cell_ids)), feature_list)
     print(f"Cell line count: {len(cell_ids)}")
