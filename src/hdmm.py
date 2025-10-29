@@ -9,9 +9,7 @@ from numpyro.distributions import constraints
 import numpy as np
 from itertools import product, accumulate
 import matplotlib.pyplot as plt
-from sklearn.manifold import TSNE
 import seaborn as sns
-import umap  
 from functools import reduce
 from tqdm import trange
 from typing import List, Dict, Any, Tuple
@@ -19,320 +17,6 @@ import copy
 import time
 
 from vis import tsne_visualization, umap_visualization
-
-
-def select_most_diverse(samples: jnp.ndarray, num_select: int = 3):
-    """
-    samples: (N, D)
-    returns: python list of selected indices
-    """
-    N = samples.shape[0]
-    selected = [0]
-
-    # pairwise Euclidean distances
-    diff = samples[:, None, :] - samples[None, :, :]   # (N, N, D)
-    dist_matrix = jnp.linalg.norm(diff, axis=-1)      # (N, N)
-
-    for _ in range(num_select - 1):
-        dist_to_selected = dist_matrix[jnp.array(selected), :]  # (len(selected), N)
-        min_dist = dist_to_selected.min(axis=0)                # (N,)
-
-        # Set already selected indices to -1 so they won't be picked
-        min_dist = min_dist.at[jnp.array(selected)].set(-1.0)
-        next_idx = int(jnp.argmax(min_dist))
-        selected.append(next_idx)
-
-    return selected
-
-def generate_distinct_distributions(key, N, V, concent=0.8):
-    """
-    Draw N samples from Dirichlet(alpha).
-    - If concent is scalar → alpha = concent * ones(V)
-    - If concent is vector of shape (V,) → use directly
-    Returns: (N, V)
-    """
-    if jnp.ndim(concent) == 0:  # scalar
-        alpha = jnp.ones((V,), dtype=jnp.float32) * float(concent)
-    else:  # vector
-        alpha = jnp.array(concent, dtype=jnp.float32)
-        assert alpha.shape[0] == V, f"alpha length {alpha.shape[0]} != V={V}"
-
-    alpha = jnp.clip(alpha, a_min=1e-6)
-    keys = random.split(key, N)
-    samples = jnp.stack([random.dirichlet(k, alpha) for k in keys], axis=0)
-    return samples
-
-def generate_distinct_components(key, K, V, peak_strength=5.0, base_concent=0.1):
-    """
-    Create K component-word distributions (K, V) with a 'peak' at index k * V // K
-    """
-    comps = []
-    keys = random.split(key, K)
-    for k in range(K):
-        alpha = jnp.ones((V,), dtype=jnp.float32) * base_concent
-        alpha = alpha.at[(k * V) // K].set(peak_strength)
-        comps.append(random.dirichlet(keys[k], alpha))
-    return jnp.stack(comps, axis=0)  # (K, V)
-
-def generate_hierarchical_mixture_data_jax(
-    struct_upbd,
-    N_per_base: int = 20,
-    M: int = 200,
-    V: int = 100,
-    seed: int = 42,
-):
-    """
-    Returns a dict similar to your PyTorch version, using JAX arrays.
-    """
-    key = random.PRNGKey(seed)
-    num_super = struct_upbd["G1"]
-    num_base_per_super = struct_upbd["G2"]
-    num_features = struct_upbd["G0"]
-    samples_per_base = N_per_base
-
-    # y means and stds
-    y_means = jnp.linspace(-num_features / 4, num_features / 4, num=num_features)
-    key, sub = random.split(key)
-    y_stds = 0.1 + 0.1 * random.uniform(sub, shape=(num_features,))
-
-    alpha_1 = 0.8
-    assert num_features >= num_base_per_super * num_super
-    super_window = int(num_features / num_super)
-
-    # generate super_core: shape (num_super, super_window)
-    key, sub = random.split(key)
-    super_core = generate_distinct_distributions(sub, num_super, super_window, concent=alpha_1)
-
-    # build super_prototypes (num_super, num_features)
-    blocks = int(num_features / super_window)
-    super_prototypes = jnp.zeros((num_super, num_features))
-    for i in range(blocks):
-        mask = (jnp.arange(num_super) % blocks) == i  # (num_super,)
-        mask = mask.astype(jnp.float32)[:, None]      # (num_super, 1)
-        block_vals = super_core * mask
-        super_prototypes = super_prototypes.at[:, i * super_window:(i + 1) * super_window].set(block_vals)
-
-    # normalize
-    super_prototypes = super_prototypes / super_prototypes.sum(axis=-1, keepdims=True)
-
-    # alpha_2 cycling
-    alpha_2 = [6, 8] * ((num_super + 1) // 2)
-    alpha_2 = alpha_2[:num_super]
-
-    # base prototypes
-    base_prototypes_list = []
-    for super_id in range(num_super):
-        key, sub = random.split(key)
-        candids = generate_distinct_distributions(
-            sub, num_base_per_super * 5, num_features,
-            concent=alpha_2[super_id] * super_prototypes[super_id]
-        )
-        sel = select_most_diverse(candids, num_select=num_base_per_super)
-        chosen = candids[jnp.array(sel), :]
-        base_prototypes_list.append(chosen)
-
-    base_prototypes = jnp.stack(base_prototypes_list, axis=0)  # (num_super, num_base_per_super, num_features)
-
-    # word components
-    key, sub = random.split(key)
-    word_dists = generate_distinct_components(sub, num_features, V, peak_strength=1.0, base_concent=0.1)
-
-    # apply overlapping mask scheme
-    word_block = int(V / (num_super * num_base_per_super))
-    overlap = int(word_block / 2) if word_block >= 2 else 0
-    masks = jnp.zeros_like(word_dists)
-    for i in range(num_features):
-        if i < int(num_features / 2):
-            idxs = jnp.arange(i * overlap, i * overlap + word_block)
-        else:
-            idxs = jnp.arange(-(i * overlap + word_block) - 1, -i * overlap - 1)
-        idxs = (idxs % V).astype(int)
-        mask = jnp.zeros((V,), dtype=jnp.bool_)
-        mask = mask.at[idxs].set(True)
-        masks = masks.at[i].set(mask.astype(jnp.float32))
-
-    word_dists = word_dists * masks
-    row_sums = word_dists.sum(axis=-1, keepdims=True)
-    word_dists = word_dists / (row_sums + 1e-12)
-
-    # generate documents
-    X_list, y_list, labels_base, labels_super, labels_x, labels_y = [], [], [], [], [], []
-
-    for super_id in range(num_super):
-        for base_offset in range(num_base_per_super):
-            base_id = super_id * num_base_per_super + base_offset
-            base_proto = base_prototypes[super_id, base_offset]
-
-            for _ in range(samples_per_base):
-                doc_words = []
-                docs_labels = []
-                for _w in range(M):
-                    key, sub = random.split(key)
-                    comp_logits = jnp.log(base_proto + 1e-12)
-                    comp_id = int(random.categorical(sub, comp_logits))
-                    docs_labels.append(comp_id)
-                    key, sub = random.split(key)
-                    word_logits = jnp.log(word_dists[comp_id] + 1e-12)
-                    word_idx = int(random.categorical(sub, word_logits))
-                    doc_words.append(jax.nn.one_hot(word_idx, V))
-                doc = jnp.stack(doc_words, axis=0)
-                doc_z = jnp.array(docs_labels)
-                X_list.append(doc)
-                labels_x.append(doc_z)
-
-                key, sub = random.split(key)
-                comp_for_y = int(random.categorical(sub, jnp.log(base_proto + 1e-12)))
-                labels_y.append(comp_for_y)
-                key, sub = random.split(key)
-                y_val = y_means[comp_for_y] + y_stds[comp_for_y] * random.normal(sub, shape=())
-                y_list.append(y_val)
-                labels_base.append(base_id)
-                labels_super.append(super_id)
-
-    X_data = jnp.stack(X_list, axis=0)
-    y_data = jnp.stack(y_list, axis=0)
-    labels_base = jnp.array(labels_base)
-    labels_super = jnp.array(labels_super)
-    labels_x = jnp.array(labels_x)
-    labels_y = jnp.array(labels_y)
-
-    return {
-        "x": X_data,
-        "y": y_data,
-        "super_labels": labels_super,
-        "base_labels": labels_base,
-        "x_labels": labels_x,
-        "y_labels": labels_y,
-        "word_dists": word_dists,
-        "reg_means": y_means,
-        "reg_std": y_stds,
-        "super_mix_weights": super_prototypes,
-        "child_mix_weights": base_prototypes,
-    }
-
-
-# def tsne_visualization(data, struct_upbd, file_prefix):
-#     x_agg = data["x"].sum(axis=1)
-#     # Run t-SNE
-#     tsne = TSNE(n_components=2, random_state=0)
-#     x_embedded = tsne.fit_transform(x_agg)
-
-#     # Plot t-SNE colored by super categories
-#     plt.figure()
-
-#     plt.subplot(1, 2, 1)
-#     scatter = plt.scatter(x_embedded[:, 0], x_embedded[:, 1], c=data["super_labels"], cmap="tab10", s=10)
-#     plt.colorbar(scatter, ticks=range(6))
-#     plt.title("t-SNE of aggregated x colored by super categories")
-#     plt.xlabel("TSNE 1")
-#     plt.ylabel("TSNE 2")
-
-#     # Plot t-SNE colored by base categories
-#     plt.subplot(1, 2, 2)
-#     scatter = plt.scatter(x_embedded[:, 0], x_embedded[:, 1], c=data["base_labels"], cmap="tab20", s=10)
-#     plt.colorbar(scatter, ticks=range(18))
-#     plt.title("t-SNE of aggregated x colored by base categories")
-#     plt.xlabel("TSNE 1")
-#     plt.ylabel("TSNE 2")
-
-#     plt.tight_layout()
-#     plt.savefig(f"{file_prefix}_tsne_visualization.png")
-#     plt.close()
-
-#     # Plot distribution of y by super categories
-#     plt.figure()
-#     for super_id in range(struct_upbd["G1"]*struct_upbd["G2"]):
-#         y_vals = data["y"][data["super_labels"] == super_id]
-#         plt.hist(y_vals, bins=20, alpha=0.5, label=f"Super {super_id}")
-
-#     plt.title("Distribution of y by Super Categories")
-#     plt.xlabel("y")
-#     plt.ylabel("Count")
-#     plt.legend()
-#     plt.savefig(f"{file_prefix}_y_distribution_by_super.png")
-#     plt.close()
-
-
-# def umap_visualization(data, struct_upbd, file_prefix):
-#     x_agg = data["x"].sum(axis=1)
-#     # === UMAP projection ===
-#     reducer = umap.UMAP(random_state=0)
-#     x_umap = reducer.fit_transform(x_agg)
-
-
-#     # === UMAP Plots ===
-#     plt.figure()
-
-#     # Super category coloring
-#     plt.subplot(1, 2, 1)
-#     plt.scatter(x_umap[:, 0], x_umap[:, 1], c=data["super_labels"], cmap="tab10", s=10)
-#     plt.title("UMAP by Super Category")
-#     plt.xlabel("UMAP 1")
-#     plt.ylabel("UMAP 2")
-
-#     # Base category coloring
-#     plt.subplot(1, 2, 2)
-#     plt.scatter(x_umap[:, 0], x_umap[:, 1], c=data["base_labels"], cmap="tab20", s=10)
-#     plt.title("UMAP by Base Category")
-#     plt.xlabel("UMAP 1")
-#     plt.ylabel("UMAP 2")
-
-#     plt.tight_layout()
-#     plt.savefig(f"{file_prefix}_umap_visualization.png")
-#     plt.close()
-
-#     # === Mixture Component Word Distributions ===
-#     num_components = struct_upbd["G0"]
-#     V = data["x"].shape[-1]
-#     word_dists = data["word_dists"]
-#     super_mix_weights = data["super_mix_weights"]
-#     child_mix_weights = data["child_mix_weights"]
-
-#     # Bar plots for each component
-#     fig, axs = plt.subplots(struct_upbd["G0"], 1)
-#     for i in range(num_components):
-#         ax = axs[i]
-#         ax.bar(range(V), word_dists[i])
-#         ax.set_title(f"Component {i}")
-#         ax.set_xlabel("Word ID")
-#         ax.set_ylabel("Probability")
-#         ax.set_ylim(0, word_dists.max().item() * 1.1)
-
-#     fig.suptitle("Word Distributions of 10 Shared Mixture Components", fontsize=16)
-#     plt.tight_layout()
-#     fig.savefig(f"{file_prefix}_word_distributions.png")
-#     plt.close(fig)
-
-#     # Bar plots for each component
-#     fig, axs = plt.subplots(struct_upbd["G1"], 1)
-#     for i in range(struct_upbd["G1"]):
-#         ax = axs[i]
-#         ax.bar(range(struct_upbd["G0"]), super_mix_weights[i])
-#         ax.set_title(f"Super Category {i}")
-#         ax.set_xlabel("Mixture Components")
-#         ax.set_ylabel("Weights")
-#         ax.set_ylim(0, super_mix_weights.max().item() * 1.1)
-
-#     fig.suptitle("Super Category Weights of 10 Shared Mixture Components", fontsize=16)
-#     plt.tight_layout()
-#     fig.savefig(f"{file_prefix}_super_category_weights.png")
-#     plt.close()
-
-#     # Bar plots for each component
-#     fig, axs = plt.subplots(struct_upbd["G1"]*struct_upbd["G2"], 1)
-#     for i in range(struct_upbd["G1"]):
-#         for j in range(struct_upbd["G2"]):
-#             ax = axs[i * struct_upbd["G2"] + j]
-#             ax.bar(range(struct_upbd["G0"]), child_mix_weights[j][i])
-#             ax.set_title(f"Super Category {j} Child Category {i}")
-#             ax.set_xlabel("Mixture Components")
-#             ax.set_ylabel("Weights")
-#             ax.set_ylim(0, child_mix_weights.max().item() * 1.1)
-
-#     fig.suptitle("Child Category Weights of 10 Shared Mixture Components", fontsize=16)
-#     plt.tight_layout()
-#     fig.savefig(f"{file_prefix}_child_category_weights.png")
-#     plt.close(fig)
 
 
 @jax.jit
@@ -474,7 +158,195 @@ def gen_next_level_prior(G_parent, alpha_param):
     return [param_alpha, param_beta]
 
 
-def hdp_model(data, struct_upbd, vocab_size, seed, known_base=False, known_super=False, gen_mixture=None, device=None, prev_state=None):
+def init_word_categories(struct_upbd, doc_values, N, M):
+    topic_dist = doc_values["G"]
+    # ----- Words -----
+    # Per-token topic → per-token word dist, then one-hot word obs via Multinomial(1, .)
+    topic_over_docs = jnp.broadcast_to(jnp.expand_dims(topic_dist, axis=1), (N, M, struct_upbd["G0"]))
+    key, sub = random.split(key)
+    z_gen = dist.Categorical(probs=topic_over_docs).sample(sub)  # (N, M)
+    return z_gen
+
+
+def init_doc_values(struct_upbd, model, assigned_local, N):
+    doc_values = {}
+    struct_values = model["struct_values"]
+    struct_params = model["struct_params"]
+    # Document-level stick-breaking at bottom: construct Beta params using G_{L} and alpha_{L}
+    bottom_G = struct_values[f"G{len(struct_upbd)-1}"][None, ...]  # shape (K0,) broadcastable with per-doc gather
+    bottom_alpha = struct_params[f"alpha{len(struct_upbd)-1}"][None, ...]
+
+    # Gather per-doc parent path for alpha and weights_prior
+    # For G_{L} (topic base weights), use parent indices in assigned_zs[:-1]
+    idx_tuple_weights = tuple(assigned_local)
+    batch_idx = jnp.arange(N)
+    indices = (batch_idx, *idx_tuple_weights)  
+
+    weights_prior = bottom_G[indices + (slice(None),)]  # (N, G0)
+    assert weights_prior.shape == (N, struct_upbd["G0"])
+    concentrate = bottom_alpha[indices + (slice(None),)]  # (N, G0)
+    assert concentrate.shape == (N, struct_upbd["G0"])
+
+    param_alpha = concentrate * weights_prior
+    param_beta = suffix_sum(param_alpha)
+
+    key, sub = random.split(key)
+    beta_doc = dist.Beta(param_alpha, param_beta).sample(sub)  # (N, G0)
+    beta_doc = beta_doc.at[:, -1].set(1.0)  # last stick is always 1
+    doc_values["P"] = [param_alpha, param_beta]
+    doc_values["Prior"] = copy.deepcopy(doc_values["P"])
+    doc_values["B"] = beta_doc
+    doc_values["G"] = mix_weights(beta_doc)  # (N, G0)
+    return doc_values
+
+
+def init_local_category_assignments(struct_upbd, model, cluster_dims, N):
+    struct_values = model["struct_values"]
+
+    # --- prepare sizes / offsets ---
+    L = len(struct_upbd) - 1  # number of LG levels you iterate over (same as your code)
+
+    # --- sampling walk (per-batch) ---
+    assigned_local = [jnp.zeros((N,), dtype=jnp.int32)]  # local indices used to index the structured params (for advanced indexing)
+
+    for level in range(L):
+        # W shape: (... parent dims ..., K[level])
+        W = struct_values[f"LG{level}"][None, ...]    # keep your original broadcasting if needed
+
+        # build index tuple out of local indices (same as your original approach)
+        index_tuple = tuple(assigned_local[:])       # these are local indices of parents
+        param = W[index_tuple]                       # -> (N, K[level])
+        assert param.shape == (N, cluster_dims[level])
+
+        key, sub = random.split(key)
+        z_local = dist.Categorical(probs=param).sample(sub)  # local index under its parent (0..K[level]-1)
+        assert jnp.unique(z_local).size <= cluster_dims[level]
+
+        # append for next iterations / for output
+        assigned_local.append(z_local)   # keep local indices for advanced indexing of next level's W
+
+    cat_zs = assigned_local[1:]  # skip the root level
+    local_category_assignments = jnp.stack(cat_zs, axis=1) if len(cat_zs) > 0 else jnp.zeros((N, 0), dtype=jnp.int32)
+    # reverse to align with your later indexing usage
+    assigned_local = cat_zs[::-1]
+
+    return local_category_assignments, assigned_local
+
+
+def init_reg_categories(doc_values):
+    topic_dist = doc_values["G"]
+    key, sub = random.split(key)
+    z_reg = dist.Categorical(probs=topic_dist).sample(sub)  
+    return z_reg
+
+
+def infer(data, model, struct_upbd, iter_num):
+
+    K = int(struct_upbd["G0"])
+    S = int(struct_upbd["G1"])
+    C = int(struct_upbd["G2"])
+    N = data.shape[0]
+    M = data.shape[1]
+    struct_params = model["struct_params"]
+    struct_values = model["struct_values"]
+    mixture_components = model["mixture_components"]
+    generation_components = mixture_components["generation"]
+    regression_mu = mixture_components["regression_mu"]
+    regression_sigma = mixture_components["regression_sigma"]
+
+    local_category_assignments, assigned_z = init_local_category_assignments(struct_upbd, model, [S, C], N)
+    doc_values = init_doc_values(struct_upbd, model, assigned_z, N)
+
+    z_gen = init_word_categories(struct_upbd, doc_values, N, M)
+
+    obs = data         # expected shape (N, M, vocab_size)
+
+    unique_pairs = []
+    for s in range(S):
+        for c in range(C):
+            unique_pairs.append((s, c))
+    z_reg = []
+    for i in range(iter_num):
+            
+        # ------------------------
+        # Sample document-level weights and word/regression categories
+        # ------------------------
+        for n in range(N):
+
+            # Sample word-level categories
+            for m in range(M):
+                key, sub = random.split(key)
+                sample, key = word_category_conditional(sub, obs[n, m], None, generation_components, infer=True)
+                # update gibbs state
+                z_gen = z_gen.at[n, m].set(sample)
+
+            # Sample doc-level weights
+            key, sub = random.split(key)
+            new_params, key = doc_weight_conditional(
+                sub,
+                doc_values["B"][n],
+                [doc_values["Prior"][0][n], doc_values["Prior"][1][n]],
+                z_gen[n], 
+                None,
+                infer=True
+            )
+            # update gibbs state
+            doc_values["P"][0] = doc_values["P"][0].at[n].set(new_params[0])
+            doc_values["P"][1] = doc_values["P"][1].at[n].set(new_params[1])
+
+            key, sub = random.split(key)
+            beta = dist.Beta(doc_values["P"][0][n], doc_values["P"][1][n]).sample(sub)
+            beta = beta.at[..., -1].set(1.0)  # last entry is always 1
+
+            doc_values["B"] = doc_values["B"].at[n].set(beta)
+            assert doc_values["B"].shape == (N, K)
+            doc_values["G"] = doc_values["G"].at[n].set(mix_weights(doc_values["B"][n]))      
+
+            key, sub = random.split(key)
+            s_idx = int(local_category_assignments[n, 0])
+            
+            doc_alpha, doc_beta = gen_next_level_prior(struct_values["G2"][:, s_idx], struct_params["alpha2"][:, s_idx])
+            new_cat, key = doc_base_cat_conditional(sub, doc_values["B"][n], [doc_alpha, doc_beta], struct_values["B2"][:, s_idx], [struct_values["Prior2"][0][:, s_idx], struct_values["Prior2"][1][:, s_idx]], struct_values["LG1"][s_idx])
+            # update gibbs state
+            local_category_assignments = local_category_assignments.at[n, 1].set(new_cat)
+            # update doc-level prior
+            new_prior_alpha, new_prior_beta = gen_next_level_prior(struct_values["G2"][int(new_cat), s_idx], struct_params["alpha2"][int(new_cat), s_idx])
+            doc_values["Prior"][0] = doc_values["Prior"][0].at[n].set(new_prior_alpha)
+            doc_values["Prior"][1] = doc_values["Prior"][1].at[n].set(new_prior_beta)
+
+        # ------------------------
+        # Sample document category assignments
+        # ------------------------
+        cats = []
+        rows = []
+        probs = []
+        for s in range(S):
+            for c in range(C):
+                # print(f"Sampling category for super {s} base {c}")
+                base_cat_nu = struct_values["B2"][c, s]
+                key, sub = random.split(key)
+                parent_cat_alpha = jnp.mean(struct_values["Prior2"][0], axis=0)
+                parent_cat_beta = jnp.mean(struct_values["Prior2"][1], axis=0)
+                assert base_cat_nu.shape == (K,)
+                assert parent_cat_alpha.shape == (S, K)
+                assert parent_cat_beta.shape == (S, K)
+                new_cat, prob = super_cat_conditional(sub, base_cat_nu, [parent_cat_alpha, parent_cat_beta], struct_values["B1"], struct_values["Prior1"], struct_values["LG0"])
+                cats.append([int(new_cat), int(c)])
+                probs.append(prob)
+
+                row_idx = jnp.where((local_category_assignments[:, 0] == s) & (local_category_assignments[:, 1] == c))[0]
+                rows.append(row_idx)
+
+        balanced_cats = replace_duplicates(unique_pairs, cats, probs, rng=np.random.default_rng(i*13))
+        for row, new_indices in zip(rows, balanced_cats):
+            local_category_assignments = local_category_assignments.at[row].set(jnp.array(new_indices))
+
+        z_reg.append(init_reg_categories(doc_values))
+
+    return regression_mu, regression_sigma, z_reg
+
+
+def hdp_model(data, struct_upbd, vocab_size, seed, known_base=False, known_super=False, gen_mixture=None, device=None):
     """
     Args:
       data: (feature, label), where
@@ -501,155 +373,157 @@ def hdp_model(data, struct_upbd, vocab_size, seed, known_base=False, known_super
     # ------------------------
     # Global/structural params
     # ------------------------
-    if (prev_state is None):
-        struct_params = {}
-        struct_params["gamma"]      = numpyro.param("model_gamma",      jnp.asarray([N/10.]), constraint=constraints.positive)
-        struct_params["dir_alpha"]  = numpyro.param("model_dir_alpha",  jnp.asarray([1./vocab_size]), constraint=constraints.positive)
-        struct_params["nig_mu"]     = numpyro.param("model_nig_mu",     jnp.asarray([0.0]))
-        struct_params["nig_kappa"]  = numpyro.param("model_nig_kappa",  jnp.asarray([1.0]), constraint=constraints.positive)
-        struct_params["nig_alpha"]  = numpyro.param("model_nig_alpha",  jnp.asarray([1.0]), constraint=constraints.positive)
-        struct_params["nig_beta"]   = numpyro.param("model_nig_beta",   jnp.asarray([1.0]), constraint=constraints.positive)
+    struct_params = {}
+    struct_params["gamma"]      = numpyro.param("model_gamma",      jnp.asarray([N/10.]), constraint=constraints.positive)
+    struct_params["dir_alpha"]  = numpyro.param("model_dir_alpha",  jnp.asarray([1./vocab_size]), constraint=constraints.positive)
+    struct_params["nig_mu"]     = numpyro.param("model_nig_mu",     jnp.asarray([0.0]))
+    struct_params["nig_kappa"]  = numpyro.param("model_nig_kappa",  jnp.asarray([1.0]), constraint=constraints.positive)
+    struct_params["nig_alpha"]  = numpyro.param("model_nig_alpha",  jnp.asarray([1.0]), constraint=constraints.positive)
+    struct_params["nig_beta"]   = numpyro.param("model_nig_beta",   jnp.asarray([1.0]), constraint=constraints.positive)
 
-        # alpha/eta tensors across hierarchy
-        for parent_level in range(len(struct_upbd) - 1):
-            child_level = parent_level + 1
-            full_dim = child_level + 1  
+    # alpha/eta tensors across hierarchy
+    for parent_level in range(len(struct_upbd) - 1):
+        child_level = parent_level + 1
+        full_dim = child_level + 1  
 
-            base = numpyro.param(
-                f"model_alpha{parent_level}",
-                jnp.ones(tuple(param_dims[-child_level:-1])),
-                constraint=constraints.positive,
-            )
-            struct_params[f"alpha{parent_level}"] = jnp.expand_dims(base, -1) * jnp.ones(tuple(param_dims[-child_level:]))
-            assert struct_params[f"alpha{parent_level}"].shape == tuple(param_dims[-child_level:])
-
-            struct_params[f"eta{parent_level}"] = numpyro.param(
-                f"model_eta{parent_level}",
-                jnp.ones(tuple(cluster_dims[:child_level])),
-                constraint=constraints.positive,
-            )
-
-        # Last level alpha (no eta)
-        last_idx = len(struct_upbd) - 1
-        base_last = numpyro.param(
-            f"model_alpha{last_idx}",
-            jnp.ones(tuple(param_dims[:-1])),
+        base = numpyro.param(
+            f"model_alpha{parent_level}",
+            jnp.ones(tuple(param_dims[-child_level:-1])),
             constraint=constraints.positive,
         )
-        struct_params[f"alpha{last_idx}"] = jnp.expand_dims(base_last, -1) * jnp.ones(tuple(param_dims))
-        assert struct_params[f"alpha{last_idx}"].shape == tuple(param_dims)
+        struct_params[f"alpha{parent_level}"] = jnp.expand_dims(base, -1) * jnp.ones(tuple(param_dims[-child_level:]))
+        assert struct_params[f"alpha{parent_level}"].shape == tuple(param_dims[-child_level:])
 
-        # ---------------
-        # Stick-breaking
-        # ---------------
-        struct_values = {}
+        struct_params[f"eta{parent_level}"] = numpyro.param(
+            f"model_eta{parent_level}",
+            jnp.ones(tuple(cluster_dims[:child_level])),
+            constraint=constraints.positive,
+        )
 
-        # Top-level Beta sticks B0 -> G0 weights
-        K0 = param_dims[-1]
-        B0_a = jnp.ones((K0,))  # shape (K0,)
-        B0_b = jnp.broadcast_to(struct_params["gamma"], (K0,))
+    # Last level alpha (no eta)
+    last_idx = len(struct_upbd) - 1
+    base_last = numpyro.param(
+        f"model_alpha{last_idx}",
+        jnp.ones(tuple(param_dims[:-1])),
+        constraint=constraints.positive,
+    )
+    struct_params[f"alpha{last_idx}"] = jnp.expand_dims(base_last, -1) * jnp.ones(tuple(param_dims))
+    assert struct_params[f"alpha{last_idx}"].shape == tuple(param_dims)
+
+    # ---------------
+    # Stick-breaking
+    # ---------------
+    struct_values = {}
+
+    # Top-level Beta sticks B0 -> G0 weights
+    K0 = param_dims[-1]
+    B0_a = jnp.ones((K0,))  # shape (K0,)
+    B0_b = jnp.broadcast_to(struct_params["gamma"], (K0,))
+    key, sub = random.split(key)
+    beta_0 = dist.Beta(B0_a, B0_b).sample(sub)
+    beta_0 = beta_0.at[-1].set(1.0)  # last stick is always 1
+    struct_values["P0"] = [B0_a, B0_b]
+    struct_values["Prior0"] = copy.deepcopy(struct_values["P0"])
+    struct_values["B0"] = beta_0
+    struct_values["G0"] = mix_weights(beta_0)  # (K0,)
+    struct_values["S0"] = (K0,)
+    assert struct_values["G0"].shape == (K0,)
+    
+
+    # Lower levels
+    for parent_level in range(len(struct_upbd) - 1):
+        child_level = parent_level + 1
+        full_dim = child_level + 1  # number of dims for this plate
+
+        # shapes like in your code:
+        # alpha * G_parent and alpha * (1 - cumsum(G_parent))
+        G_parent = struct_values[f"G{parent_level}"]  # shape param_dims[-(parent_level+1):]
+        alpha_param = struct_params[f"alpha{parent_level}"]  # shape param_dims[-child_level:]
+        shape_needed = tuple(param_dims[-full_dim:])
+
+        param_alpha = alpha_param * G_parent
+        param_beta = suffix_sum(param_alpha)
+
+        a = jnp.broadcast_to(jnp.expand_dims(param_alpha, 0), shape_needed)
+        b = jnp.broadcast_to(jnp.expand_dims(param_beta, 0), shape_needed)
+
         key, sub = random.split(key)
-        beta_0 = dist.Beta(B0_a, B0_b).sample(sub)
-        beta_0 = beta_0.at[-1].set(1.0)  # last stick is always 1
-        struct_values["P0"] = [B0_a, B0_b]
-        struct_values["Prior0"] = copy.deepcopy(struct_values["P0"])
-        struct_values["B0"] = beta_0
-        struct_values["G0"] = mix_weights(beta_0)  # (K0,)
-        struct_values["S0"] = (K0,)
-        assert struct_values["G0"].shape == (K0,)
-        
+        beta = dist.Beta(a, b).sample(sub)
+        beta = beta.at[..., -1].set(1.0)  # last stick is always 1
+        struct_values[f"P{child_level}"] = [a, b]
+        struct_values[f"Prior{child_level}"] = copy.deepcopy(struct_values[f"P{child_level}"])
+        struct_values[f"S{child_level}"] = shape_needed
+        struct_values[f"B{child_level}"] = beta
+        struct_values[f"G{child_level}"] = mix_weights(beta)
+        assert struct_values[f"G{child_level}"].shape == tuple(param_dims[-full_dim:])
+        assert struct_values[f"P{child_level}"][0].shape == tuple(param_dims[-full_dim:])
+        assert struct_values[f"P{child_level}"][1].shape == tuple(param_dims[-full_dim:])
 
-        # Lower levels
-        for parent_level in range(len(struct_upbd) - 1):
-            child_level = parent_level + 1
-            full_dim = child_level + 1  # number of dims for this plate
+    # ---------------
+    # Cluster weights
+    # ---------------
+    for parent_level in range(len(struct_upbd) - 1):
+        child_level = parent_level + 1
+        full_dim = child_level + 1
+        eta = struct_params[f"eta{parent_level}"]  # shape param_dims[-full_dim:-1]
 
-            # shapes like in your code:
-            # alpha * G_parent and alpha * (1 - cumsum(G_parent))
-            G_parent = struct_values[f"G{parent_level}"]  # shape param_dims[-(parent_level+1):]
-            alpha_param = struct_params[f"alpha{parent_level}"]  # shape param_dims[-child_level:]
-            shape_needed = tuple(param_dims[-full_dim:])
-
-            param_alpha = alpha_param * G_parent
-            param_beta = suffix_sum(param_alpha)
-
-            a = jnp.broadcast_to(jnp.expand_dims(param_alpha, 0), shape_needed)
-            b = jnp.broadcast_to(jnp.expand_dims(param_beta, 0), shape_needed)
-
-            key, sub = random.split(key)
-            beta = dist.Beta(a, b).sample(sub)
-            beta = beta.at[..., -1].set(1.0)  # last stick is always 1
-            struct_values[f"P{child_level}"] = [a, b]
-            struct_values[f"Prior{child_level}"] = copy.deepcopy(struct_values[f"P{child_level}"])
-            struct_values[f"S{child_level}"] = shape_needed
-            struct_values[f"B{child_level}"] = beta
-            struct_values[f"G{child_level}"] = mix_weights(beta)
-            assert struct_values[f"G{child_level}"].shape == tuple(param_dims[-full_dim:])
-            assert struct_values[f"P{child_level}"][0].shape == tuple(param_dims[-full_dim:])
-            assert struct_values[f"P{child_level}"][1].shape == tuple(param_dims[-full_dim:])
-
-        # ---------------
-        # Cluster weights
-        # ---------------
-        for parent_level in range(len(struct_upbd) - 1):
-            child_level = parent_level + 1
-            full_dim = child_level + 1
-            eta = struct_params[f"eta{parent_level}"]  # shape param_dims[-full_dim:-1]
-
-            key, sub = random.split(key)
-            a = jnp.ones_like(eta)
-            b = eta
-            beta = dist.Beta(a, b).sample(sub)
-            beta = beta.at[-1].set(1.0)  # last stick is always 1
-            assert beta.shape == tuple(cluster_dims[:child_level])
-            struct_values[f"LP{parent_level}"] = [a, b]
-            struct_values[f"LPrior{parent_level}"] = copy.deepcopy(struct_values[f"LP{parent_level}"])
-            struct_values[f"LS{parent_level}"] = tuple(cluster_dims[:child_level])
-            struct_values[f"LB{parent_level}"] = beta
-            struct_values[f"LG{parent_level}"] = mix_weights(beta)  # categorical probs over next level
-            assert struct_values[f"LG{parent_level}"].shape == tuple(cluster_dims[:child_level])
-
-        # -----------------------
-        # Mixture components
-        # -----------------------
-        # Topics over vocab
-        G0_size = struct_upbd["G0"]
-        mixture_components = {}
-        if gen_mixture is not None:
-            assert gen_mixture.shape == (G0_size, vocab_size)
-            mixture_components["generation"] = gen_mixture
-        else:
-            key, sub = random.split(key)
-            mixture_components["generation"] = dist.Dirichlet(
-                    struct_params["dir_alpha"]
-                    * jnp.ones((vocab_size))
-                ).sample(sub, sample_shape=(G0_size,))
-            assert mixture_components["generation"].shape == (G0_size, vocab_size)
-        # Regression components via NIG prior
         key, sub = random.split(key)
-        sigma = dist.InverseGamma(
-                jnp.broadcast_to(struct_params["nig_alpha"], (G0_size,)),
-                jnp.broadcast_to(struct_params["nig_beta"],  (G0_size,))
-            ).sample(sub)
-        assert sigma.shape == (G0_size,)
-        key, sub = random.split(key)
-        mu = dist.Normal(
-                jnp.broadcast_to(struct_params["nig_mu"], (G0_size,)),
-                jnp.sqrt(sigma / jnp.broadcast_to(struct_params["nig_kappa"], (G0_size,)))
-            ).sample(sub)
-        assert mu.shape == (G0_size,)
-        mixture_components["regression_sigma"] = sigma
-        mixture_components["regression_mu"] = mu
+        a = jnp.ones_like(eta)
+        b = eta
+        beta = dist.Beta(a, b).sample(sub)
+        beta = beta.at[-1].set(1.0)  # last stick is always 1
+        assert beta.shape == tuple(cluster_dims[:child_level])
+        struct_values[f"LP{parent_level}"] = [a, b]
+        struct_values[f"LPrior{parent_level}"] = copy.deepcopy(struct_values[f"LP{parent_level}"])
+        struct_values[f"LS{parent_level}"] = tuple(cluster_dims[:child_level])
+        struct_values[f"LB{parent_level}"] = beta
+        struct_values[f"LG{parent_level}"] = mix_weights(beta)  # categorical probs over next level
+        assert struct_values[f"LG{parent_level}"].shape == tuple(cluster_dims[:child_level])
+
+    # -----------------------
+    # Mixture components
+    # -----------------------
+    # Topics over vocab
+    G0_size = struct_upbd["G0"]
+    mixture_components = {}
+    if gen_mixture is not None:
+        assert gen_mixture.shape == (G0_size, vocab_size)
+        mixture_components["generation"] = gen_mixture
     else:
-        struct_params = prev_state["struct_params"]
-        struct_values = prev_state["struct_values"]
-        mixture_components = prev_state["mixture_components"]
+        key, sub = random.split(key)
+        mixture_components["generation"] = dist.Dirichlet(
+                struct_params["dir_alpha"]
+                * jnp.ones((vocab_size))
+            ).sample(sub, sample_shape=(G0_size,))
+        assert mixture_components["generation"].shape == (G0_size, vocab_size)
+    # Regression components via NIG prior
+    key, sub = random.split(key)
+    sigma = dist.InverseGamma(
+            jnp.broadcast_to(struct_params["nig_alpha"], (G0_size,)),
+            jnp.broadcast_to(struct_params["nig_beta"],  (G0_size,))
+        ).sample(sub)
+    assert sigma.shape == (G0_size,)
+    key, sub = random.split(key)
+    mu = dist.Normal(
+            jnp.broadcast_to(struct_params["nig_mu"], (G0_size,)),
+            jnp.sqrt(sigma / jnp.broadcast_to(struct_params["nig_kappa"], (G0_size,)))
+        ).sample(sub)
+    assert mu.shape == (G0_size,)
+    mixture_components["regression_sigma"] = sigma
+    mixture_components["regression_mu"] = mu
+
     # # ---------------------------------
     # # Per-document hierarchical routing
     # # ---------------------------------
     if (known_base):
         base_category = data[2]
         doc_values = {}
+        
+        # nodes_per_level: number of nodes at each *tree* level
+        # level 0 = root (1 node), level 1 = K[0], level 2 = K[0]*K[1], ...
+        nodes_per_level = [1]
+        for k in cluster_dims:
+            nodes_per_level.append(nodes_per_level[-1] * k)
 
         # --- sampling walk (per-batch) ---
         key, subkey = jax.random.split(key)
@@ -668,6 +542,12 @@ def hdp_model(data, struct_upbd, vocab_size, seed, known_base=False, known_super
         doc_values = {}
         # --- prepare sizes / offsets ---
         L = len(struct_upbd) - 1  # number of LG levels you iterate over (same as your code)
+        
+        # nodes_per_level: number of nodes at each *tree* level
+        # level 0 = root (1 node), level 1 = K[0], level 2 = K[0]*K[1], ...
+        nodes_per_level = [1]
+        for k in cluster_dims:
+            nodes_per_level.append(nodes_per_level[-1] * k)
 
         # --- sampling walk (per-batch) ---
         assigned_local = [jnp.zeros((N,), dtype=jnp.int32)]  # local indices used to index the structured params (for advanced indexing)
@@ -823,30 +703,7 @@ def cat_weight_conditional(key, nu, params, word_cats, reg_cats):
 
 
 @jax.jit
-def reg_category_conditional(key, score, weight, components):
-    """
-    Sample category assignment for a single regression score given mixture weights and component distributions.
-    Args:
-        key: JAX PRNGKey
-        score: float, regression score
-        weight: (K,) mixture weights for the document
-        components: (K, 2) component regression parameters (mean, variance)
-    Returns:
-        sample: int, sampled category index from 0 to K-1
-        new_key: updated JAX PRNGKey
-    """
-    reg_dist = dist.Normal(loc=components[0], scale=jnp.sqrt(components[1]))
-    log_probs = reg_dist.log_prob(score)
-    un_normalized = log_probs + jnp.log(weight + 1e-12)
-
-    cat_prob = jax.nn.softmax(un_normalized, axis=-1)
-    key, sub = random.split(key)
-    sample = dist.Categorical(probs=cat_prob).sample(sub)
-    return sample, key
-
-
-@jax.jit
-def word_category_conditional(key, word, weight, components):
+def word_category_conditional(key, word, weight, components, infer=False):
     """
     Sample category assignment for a single word given mixture weights and component distributions.
     Args:
@@ -861,7 +718,10 @@ def word_category_conditional(key, word, weight, components):
 
     gen_dist = dist.Multinomial(total_count=1, probs=components)
     log_probs = gen_dist.log_prob(word)
-    un_normalized = log_probs + jnp.log(weight + 1e-12)
+    if (infer):
+        un_normalized = log_probs
+    else:
+        un_normalized = log_probs + jnp.log(weight + 1e-12)
     cat_prob = jax.nn.softmax(un_normalized, axis=-1)
 
     key, sub = random.split(key)
@@ -869,8 +729,7 @@ def word_category_conditional(key, word, weight, components):
     return sample, key
 
 
-@jax.jit
-def doc_weight_conditional(key, nu_doc, params, word_cats, reg_cats):
+def doc_weight_conditional(key, nu_doc, params, word_cats, reg_cats, infer=False):
     """
     Sample document-level stick-breaking weights given category assignments and Beta parameters.
     Args:
@@ -886,8 +745,9 @@ def doc_weight_conditional(key, nu_doc, params, word_cats, reg_cats):
     K = 20
     cat_count = jnp.bincount(word_cats.ravel(), length=K)
     cat_idx = jnp.arange(K)
-    reg_count = jnp.bincount(reg_cats.ravel(), length=K)
-    cat_count = cat_count + reg_count
+    if not infer:
+        reg_count = jnp.bincount(reg_cats.ravel(), length=K)
+        cat_count = cat_count + reg_count
 
     alpha_bias = jnp.zeros_like(nu_doc, dtype=jnp.int32).at[cat_idx].set(cat_count)
     beta_bias = suffix_sum(alpha_bias)
@@ -1445,37 +1305,6 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gt, file_prefi
     for s in range(S):
         for c in range(C):
             unique_pairs.append((s, c))
-    
-    # super_mix_weights_mean = struct_values["G1"]
-    # # Bar plots for each component
-    # fig, axs = plt.subplots(1, 2, figsize=(20, 6))
-    # for i in range(S):
-    #     ax = axs[i]
-    #     ax.bar(range(K), super_mix_weights_mean[i], capsize=5, alpha=0.7, color="skyblue", edgecolor="black")
-    #     ax.set_title(f"Super Category {i} with mean ± std")
-    #     ax.set_xlabel("Mixture Components")
-    #     ax.set_ylabel("Weights")
-    #     ax.set_ylim(0, super_mix_weights_mean.max().item() * 1.1)
-
-    # fig.suptitle(f"Super Category Weights of 10 Shared Mixture Components of iteration {-1}", fontsize=16)
-    # plt.tight_layout()
-    # plt.show()
-
-    # child_mix_weights_mean = struct_values["G2"]
-    # # Bar plots for each component
-    # fig, axs = plt.subplots(3, 2, figsize=(20, 20))
-    # for i in range(struct_upbd["G2"]):
-    #     for j in range(S):
-    #         ax = axs[i, j]
-    #         ax.bar(range(K), child_mix_weights_mean[i][j], capsize=5, alpha=0.7, color="skyblue", edgecolor="black")
-    #         ax.set_title(f"Super Category {j} Child Category {i} with mean ± std")
-    #         ax.set_xlabel("Mixture Components")
-    #         ax.set_ylabel("Weights")
-    #         ax.set_ylim(0, child_mix_weights_mean.max().item() * 1.1)
-
-    # fig.suptitle(f"Child Category Weights of 10 Shared Mixture Components of iteration {-1}", fontsize=16)
-    # plt.tight_layout()
-    # plt.show()
 
     pbar = trange(num_iters + 1, desc="Gibbs Sampling")
     for it in pbar:
@@ -1654,45 +1483,11 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gt, file_prefi
             prior_alpha, prior_beta = gen_next_level_prior(struct_values["G1"][s], struct_params["alpha1"][s])
             struct_values["Prior2"][0] = struct_values["Prior2"][0].at[:, s].set(prior_alpha)
             struct_values["Prior2"][1] = struct_values["Prior2"][1].at[:, s].set(prior_beta)
-        # if (it % 10 == 0 and it > 0):
-        #     super_mix_weights_mean = struct_values["G1"]
-        #     # Bar plots for each component
-        #     fig, axs = plt.subplots(1, 2, figsize=(20, 6))
-        #     for i in range(S):
-        #         ax = axs[i]
-        #         ax.bar(range(K), super_mix_weights_mean[i], capsize=5, alpha=0.7, color="skyblue", edgecolor="black")
-        #         ax.set_title(f"Super Category {i} with mean ± std")
-        #         ax.set_xlabel("Mixture Components")
-        #         ax.set_ylabel("Weights")
-        #         ax.set_ylim(0, super_mix_weights_mean.max().item() * 1.1)
-
-        #     fig.suptitle(f"Super Category Weights of 10 Shared Mixture Components of iteration {-1}", fontsize=16)
-        #     plt.tight_layout()
-        #     plt.show()
-
-        #     child_mix_weights_mean = struct_values["G2"]
-        #     # Bar plots for each component
-        #     fig, axs = plt.subplots(3, 2, figsize=(20, 20))
-        #     for i in range(struct_upbd["G2"]):
-        #         for j in range(S):
-        #             ax = axs[i, j]
-        #             ax.bar(range(K), child_mix_weights_mean[i][j], capsize=5, alpha=0.7, color="skyblue", edgecolor="black")
-        #             ax.set_title(f"Super Category {j} Child Category {i} with mean ± std")
-        #             ax.set_xlabel("Mixture Components")
-        #             ax.set_ylabel("Weights")
-        #             ax.set_ylim(0, child_mix_weights_mean.max().item() * 1.1)
-
-        #     fig.suptitle(f"Child Category Weights of 10 Shared Mixture Components of iteration {-1}", fontsize=16)
-        #     plt.tight_layout()
-        #     plt.show()
 
         # Top-level
         key, sub = random.split(key)
         new_params, key = cat_weight_conditional(sub, struct_values["B0"], struct_values["Prior0"], z_gen, z_reg)
-        # original_params, key = cat_weight_conditional(sub, struct_values["B0"], [struct_values["P0"][0], struct_values["P0"][1]], z_gen, z_reg)
-        # print(f"Top level original params: alpha {original_params[0]}, beta {original_params[1]}")
-        # print(f"Top level new params: alpha {new_params[0]}, beta {new_params[1]}")
-        # update gibbs state
+
         struct_values["P0"] = [new_params[0], new_params[1]]
         key, sub = random.split(key)
         beta = dist.Beta(struct_values["P0"][0], struct_values["P0"][1]).sample(sub)
@@ -1706,10 +1501,7 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gt, file_prefi
 
         key, sub = random.split(key)
         new_params, key = super_cluster_weight_conditional(sub, struct_values["LB0"], struct_values["LPrior0"], local_category_assignments[:, 0])
-        # original_params, key = super_cluster_weight_conditional(sub, struct_values["LB0"], [struct_values["LP0"][0], struct_values["LP0"][1]], local_category_assignments[:, 0])
-        # print(f"Top level base original params: alpha {original_params[0]}, beta {original_params[1]}")
-        # print(f"Top level base new params: alpha {new_params[0]}, beta {new_params[1]}")
-        # update gibbs state
+
         struct_values["LP0"] = [new_params[0], new_params[1]]
         key, sub = random.split(key)
         beta = dist.Beta(struct_values["LP0"][0], struct_values["LP0"][1]).sample(sub)
@@ -1736,10 +1528,7 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gt, file_prefi
         }
 
         log_prob.append(compute_log_likelihood(post_state))
-        # gt_state = transfer_ground_truth_to_state(post_state, struct_upbd, gt)
-        # ground_truth.append(compute_log_likelihood(gt_state))
 
-        # if (it % 3 == 2):
         markov_chain["generation_components"].append(generation_components)
         markov_chain["regression_mu"].append(regression_mu)
         markov_chain["regression_sigma"].append(regression_sigma)
@@ -1773,7 +1562,7 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gt, file_prefi
     word_dists_var = jnp.var(jnp.stack(markov_chain["generation_components"]), axis=0)
     word_dists_std = jnp.sqrt(word_dists_var)
     # Bar plots for each component
-    fig, axs = plt.subplots(struct_upbd["G0"], 1)
+    fig, axs = plt.subplots(struct_upbd["G0"], 1, figsize=(20, 20))
     for i in range(struct_upbd["G0"]):
         ax = axs[i]
         ax.bar(range(vocab_size), word_dists_mean[i], yerr=word_dists_std[i], capsize=5, alpha=0.7, color="skyblue", edgecolor="black")
@@ -1791,7 +1580,7 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gt, file_prefi
     super_mix_weights_var = jnp.var(jnp.stack(markov_chain["G1"]), axis=0)
     super_mix_weights_std = jnp.sqrt(super_mix_weights_var)
     # Bar plots for each component
-    fig, axs = plt.subplots(S, 1)
+    fig, axs = plt.subplots(1, 2, figsize=(20, 6))
     for i in range(S):
         ax = axs[i]
         ax.bar(range(K), super_mix_weights_mean[i], yerr=super_mix_weights_std[i], capsize=5, alpha=0.7, color="skyblue", edgecolor="black")
@@ -1809,7 +1598,7 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gt, file_prefi
     child_mix_weights_var = jnp.var(jnp.stack(markov_chain["G2"]), axis=0)
     child_mix_weights_std = jnp.sqrt(child_mix_weights_var)
     # Bar plots for each component
-    fig, axs = plt.subplots(struct_upbd["G2"] * struct_upbd["G1"], 1)
+    fig, axs = plt.subplots(struct_upbd["G2"] * struct_upbd["G1"], 1, figsize=(20, 20))
     for i in range(C):
         for j in range(S):
             ax = axs[i * S + j]
@@ -1828,50 +1617,10 @@ def gibbs_sampler(key, state, struct_upbd, vocab_size, num_iters, gt, file_prefi
 
 
 def data_summary(model_return, data, struct_upbd, file_prefix):
-    # N = data["x"].shape[0]
-    # for i in range(N):
-    #     print(data["super_labels"][i], data["base_labels"][i], model_return[0]["local_category_assignments"][i])
+    N = data["x"].shape[0]
     
     model_data = transfer_state_to_data(model_return[0], struct_upbd)
     tsne_visualization(model_data, struct_upbd, file_prefix)
     umap_visualization(model_data, struct_upbd, file_prefix)
-    # diff_mask = data["super_labels"] != model_data["super_labels"]
-    # num_diff = jnp.sum(diff_mask)
-    # print(num_diff, "out of", data["super_labels"].shape[0], "super category labels are different from ground truth.")
-    # diff_mask = data["base_labels"] != model_data["base_labels"]
-    # num_diff = jnp.sum(diff_mask)
-    # print(num_diff, "out of", data["base_labels"].shape[0], "base category labels are different from ground truth.")
-    
-    
-if __name__ == "__main__":
-    struct_upbd = {"G0": 10, "G1": 2, "G2": 3}
-    data = generate_hierarchical_mixture_data_jax(struct_upbd)
-
-    dataset = (data["x"], data["y"])
-    vocab_size = data["x"].shape[-1]
-    hdmm4 = hdp_model(dataset, struct_upbd=struct_upbd, vocab_size=vocab_size, seed=60, known_base=False, known_super=False, gen_mixture=None, device="cpu")
-    model_return4 = gibbs_sampler(jax.random.PRNGKey(0), hdmm4, struct_upbd, vocab_size, num_iters=82, gt=data, file_prefix="hdmm4", known_base=False, known_super=False, gen_ground_truth=False)
-    data_summary(model_return4, data, struct_upbd, file_prefix="hdmm4")
-
-    dataset = (data["x"], data["y"])
-    vocab_size = data["x"].shape[-1]
-    hdmm3 = hdp_model(dataset, struct_upbd=struct_upbd, vocab_size=vocab_size, seed=60, known_base=False, known_super=False, gen_mixture=data["word_dists"], device="cpu")
-    model_return3 = gibbs_sampler(jax.random.PRNGKey(0), hdmm3, struct_upbd, vocab_size, num_iters=52, gt=data, file_prefix="hdmm3", known_base=False, known_super=False, gen_ground_truth=True)
-    data_summary(model_return3, data, struct_upbd, file_prefix="hdmm3")
-
-    dataset = (data["x"], data["y"], data["base_labels"])
-    vocab_size = data["x"].shape[-1]
-    hdmm2 = model(dataset, struct_upbd=struct_upbd, vocab_size=vocab_size, seed=60, known_base=True, known_super=False, gen_mixture=data["word_dists"], device="cpu")
-    model_return2 = gibbs_sampler(jax.random.PRNGKey(0), hdmm2, struct_upbd, vocab_size, num_iters=52, gt=data, file_prefix="hdmm2", known_base=True, known_super=False, gen_ground_truth=True)
-    data_summary(model_return2, data, struct_upbd, file_prefix="hdmm2")
-    
-    dataset = (data["x"], data["y"], data["base_labels"], data["super_labels"])
-    vocab_size = data["x"].shape[-1]
-    hdmm1 = model(dataset, struct_upbd=struct_upbd, vocab_size=vocab_size, seed=60, known_base=True, known_super=True, gen_mixture=data["word_dists"], device="cpu")
-    model_return1 = gibbs_sampler(jax.random.PRNGKey(0), hdmm1, struct_upbd, vocab_size, num_iters=52, gt=data, file_prefix="hdmm1", known_base=True, known_super=True, gen_ground_truth=True)
-    data_summary(model_return1, data, struct_upbd, file_prefix="hdmm1")
-
-
-
 
 

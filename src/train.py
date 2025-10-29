@@ -94,18 +94,18 @@ def get_args():
                         default="Mutations", help='dataset to be used (default: Mutations)')
     parser.add_argument("--bits", type=int, default=1, choices=[1, 8],
                         help="number of bits (default: 1)")
-    parser.add_argument("--nh", type=int, nargs='+', default=[3600, 2500],
+    parser.add_argument("--nh", type=int, nargs='+', default=[4900, 3600],
                         help="number of hidden units")
     parser.add_argument("--size", type=int, default=1,
                         help="image size (default: 1)")
     parser.add_argument("--L", type=int, default=2,
                         help="number of layers (default: 2)")
-    parser.add_argument("--lr", type=float, default=1e-2,
-                        help="learning rate (default: 1e-2)")
-    parser.add_argument("--momentum", type=float, default=0,
-                        help="momentum (default: 0)")
-    parser.add_argument("--gamma", type=float, default=1e-3,
-                        help="lr decay rate (default: 1e-3)")
+    parser.add_argument("--lr", type=float, default=5e-3,
+                        help="learning rate (default: 5e-3)")
+    parser.add_argument("--momentum", type=float, default=0.9,
+                        help="momentum (default: 0.9)")
+    parser.add_argument("--gamma", type=float, default=1e-4,
+                        help="lr decay rate (default: 1e-4)")
     parser.add_argument("--epoch", type=int, default=1000,
                         help="number of epochs (default: 1000)")
     parser.add_argument("--batch_size", type=int, default=1000,
@@ -132,31 +132,38 @@ def set_seed(seed):
 def setup(rank, args):
     port = args.port
     os.environ['MASTER_ADDR'] = 'localhost'
-    while True:
-        os.environ['MASTER_PORT'] = str(port)
-        try:
-            # initialize the process group
-            dist.init_process_group("gloo", rank=rank, world_size=args.world_size)
-        except RuntimeError:
-            port += 1
-        else:
-            break
+    os.environ['MASTER_PORT'] = str(port)
+    try:
+        # initialize the process group
+        dist.init_process_group("gloo", rank=rank, world_size=args.world_size)
+        # print(f"[Rank {rank}] Process group initialized", flush=True)
+        
+    except Exception as e:
+        import traceback
+        print(f"[Rank {rank}] ERROR: {e}", flush=True)
+        traceback.print_exc()
+
 
 def cleanup():
     dist.destroy_process_group()
 
 
 def run(rank, args):
+    wp = lambda tag: print(f"[Rank {rank}] >>> {tag}", flush=True)
+    # wp("Starting run")
     if args.distributed:
         setup(rank, args)
+        # wp("Process group set up")
 
     if args.device_ids is None:
         args.device_ids = list(range(torch.cuda.device_count()))
 
+    # wp(f"Using devices {args.device_ids}")
     transform = [torchvision.transforms.ToTensor()]
     if args.bits == 1:
         transform.append(torchvision.transforms.Lambda(binarize))
     transform = torchvision.transforms.Compose(transform)
+    # wp("Transforms ready")
 
     # Dataset
     if args.dataset == "MNIST":
@@ -179,25 +186,29 @@ def run(rank, args):
         nc = 4801
         if not args.size == 1:
             raise NotImplementedError
+        # wp("Loading Mutations dataset")
         data = torch.load("cell_drug_response_samples.pt")
         dataset = torch.utils.data.TensorDataset(data['X'], data['y'])
         training_data, test_data = torch.utils.data.random_split(
             dataset, [int(0.8*len(dataset)), len(dataset)-int(0.8*len(dataset))])
+        # wp("Mutations dataset loaded")
     else:
         raise NotImplementedError
 
     num_workers = args.num_workers//args.world_size if args.distributed else args.num_workers
-    kwargs = {'num_workers': num_workers, 'pin_memory': True}
+    kwargs = {'num_workers': num_workers, 'pin_memory': True, 'persistent_workers': True}
     num_samples = 1000 * args.batch_size
     if args.distributed:
         num_samples //= args.world_size
     batch_size = args.batch_size//args.world_size if args.distributed else args.batch_size
     generator = torch.Generator()
     generator.manual_seed(args.seed+rank)
+    # wp(f"Using batch size {batch_size} with {num_workers} workers")
     train_sampler = RandomSampler(training_data, replacement=True,
                                   num_samples=num_samples, generator=generator)
     train_dataloader = DataLoader(training_data, batch_size=batch_size,
                                   sampler=train_sampler, **kwargs)
+    # wp("Training data loader ready")
 
     if test_data is None:
         test_dataloader = None
@@ -255,7 +266,8 @@ def run(rank, args):
             torch.save(model.state_dict(), os.path.join(log_dir, args.model_path, f"model-{epoch}.pt"))
             visualize_curve(np.array(energies_mean), np.array(energies_std), np.array(losses_mean), np.array(losses_std), epoch, log_dir, writer)
 
-    writer.close()
+    if writer is not None:
+        writer.close()
 
     if args.distributed:
         cleanup()

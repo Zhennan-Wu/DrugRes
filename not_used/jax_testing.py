@@ -206,7 +206,7 @@ def generate_hierarchical_mixture_data_jax(
         "child_mix_weights": base_prototypes,
     }
 
-def tsne_visualization(data):
+def tsne_visualization(data, struct_upbd):
     x_agg = data["x"].sum(axis=1)
     # Run t-SNE
     tsne = TSNE(n_components=2, random_state=0)
@@ -235,7 +235,7 @@ def tsne_visualization(data):
 
     # Plot distribution of y by super categories
     plt.figure(figsize=(8, 4))
-    for super_id in range(6):
+    for super_id in range(struct_upbd["G1"]*struct_upbd["G2"]):
         y_vals = data["y"][data["super_labels"] == super_id]
         plt.hist(y_vals, bins=20, alpha=0.5, label=f"Super {super_id}")
 
@@ -246,7 +246,7 @@ def tsne_visualization(data):
     plt.savefig("y_distribution_by_super.png")
 
 
-def umap_visualization(data):
+def umap_visualization(data, struct_upbd):
     x_agg = data["x"].sum(axis=1)
     # === UMAP projection ===
     reducer = umap.UMAP(random_state=0)
@@ -274,16 +274,16 @@ def umap_visualization(data):
     plt.savefig("umap_visualization.png")
 
     # === Mixture Component Word Distributions ===
-    num_components = 10
+    num_components = struct_upbd["G0"]
     V = data["x"].shape[-1]
     word_dists = data["word_dists"]
     super_mix_weights = data["super_mix_weights"]
     child_mix_weights = data["child_mix_weights"]
 
     # Bar plots for each component
-    fig, axs = plt.subplots(5, 2, figsize=(20, 20))
+    fig, axs = plt.subplots(struct_upbd["G0"], 1, figsize=(20, 20))
     for i in range(num_components):
-        ax = axs[i // 2, i % 2]
+        ax = axs[i]
         ax.bar(range(V), word_dists[i])
         ax.set_title(f"Component {i}")
         ax.set_xlabel("Word ID")
@@ -295,10 +295,10 @@ def umap_visualization(data):
     plt.savefig("word_distributions.png")
 
     # Bar plots for each component
-    fig, axs = plt.subplots(1, 2, figsize=(20, 6))
-    for i in range(2):
+    fig, axs = plt.subplots(struct_upbd["G1"], 1, figsize=(20, 6))
+    for i in range(struct_upbd["G1"]):
         ax = axs[i]
-        ax.bar(range(10), super_mix_weights[i])
+        ax.bar(range(struct_upbd["G0"]), super_mix_weights[i])
         ax.set_title(f"Super Category {i}")
         ax.set_xlabel("Mixture Components")
         ax.set_ylabel("Weights")
@@ -309,11 +309,11 @@ def umap_visualization(data):
     plt.savefig("super_category_weights.png")
 
     # Bar plots for each component
-    fig, axs = plt.subplots(3, 2, figsize=(20, 20))
-    for i in range(3):
-        for j in range(2):
-            ax = axs[i, j]
-            ax.bar(range(10), child_mix_weights[j][i])
+    fig, axs = plt.subplots(struct_upbd["G2"]*struct_upbd["G1"], 1, figsize=(20, 20))
+    for i in range(struct_upbd["G2"]):
+        for j in range(struct_upbd["G1"]):
+            ax = axs[i * struct_upbd["G1"] + j]
+            ax.bar(range(struct_upbd["G0"]), child_mix_weights[j][i])
             ax.set_title(f"Super Category {j} Child Category {i}")
             ax.set_xlabel("Mixture Components")
             ax.set_ylabel("Weights")
@@ -431,7 +431,7 @@ def transfer_hierarchy_to_data_labels(local_cats: jnp.ndarray, level_dims: list[
     return labels_per_level
 
 
-def model(data, struct_upbd, vocab_size, seed, gen_mixture=None, device=None):
+def hdp_model(data, struct_upbd, vocab_size, seed, gen_mixture=None, device=None):
     """
     Args:
       data: (feature, label), where
@@ -773,8 +773,8 @@ def cat_weight_conditional(key, nu, params, word_cats, reg_cats):
     Returns:
         new_params: list of two (K,) arrays, updated Beta parameters [alpha, beta
         new_key: updated JAX PRNGKey
-    """ 
-    K = 10
+    """
+    K = 20
 
     cat_count = jnp.bincount(word_cats.ravel(), length=K)
     cat_idx = jnp.arange(K)
@@ -805,7 +805,7 @@ def doc_weight_conditional(key, nu_doc, params, word_cats, reg_cats):
         new_params: list of two (K,) arrays, updated Beta parameters [alpha, beta
         new_key: updated JAX PRNGKey
     """
-    K = 10
+    K = 20
     cat_count = jnp.bincount(word_cats.ravel(), length=K)
     cat_idx = jnp.arange(K)
     reg_count = jnp.bincount(reg_cats.ravel(), length=K)
@@ -886,8 +886,8 @@ def doc_base_cat_conditional_standard(key, local_super_cat, nu_doc, nu2, params2
         new_cat: (2,) array of sampled category indices [level1, level2]
         new_key: updated JAX PRNGKey
     """
-    
-    K = 10
+
+    K = 20
     nu_doc = nu_doc[None, :]  # (1, K)
     
     nu_2_log_prob = dist.Beta(params2[0][:, local_super_cat][local_super_cat], params2[1][:, local_super_cat]).log_prob(nu2[:, local_super_cat]) # (C, K)
@@ -983,7 +983,7 @@ def doc_base_cat_conditional(key, doc_idx, doc_super_cat, nu_cluster, nu_param, 
 
 
 def doc_super_cat_conditional(key, doc_indices, nu_cluster, nu_param, cluster_prior, local_cat_assignments, word_cats, reg_cats):
-    S = 2
+    S = 5
     cat_params = []
     for s in range(S):
         mask = (local_cat_assignments[:, 0] == s)
@@ -1014,7 +1014,7 @@ def super_cluster_weight_conditional(key, nu_cluster, params, local_cluster_cats
         new_params: list of two (S,) arrays, updated Beta parameters [alpha, beta
         new_key: updated JAX PRNGKey
     """
-    S = 2
+    S = 5
     cat_count = jnp.bincount(local_cluster_cats.ravel(), length=S)
     cat_idx = jnp.arange(S)
 
@@ -1749,12 +1749,12 @@ def data_summary(model_return, data, struct_upbd):
 if __name__ == "__main__":
     struct_upbd = {"G0": 10, "G1": 2, "G2": 3}
     data = generate_hierarchical_mixture_data_jax(struct_upbd)
-    tsne_visualization(data)
-    umap_visualization(data)
+    tsne_visualization(data, struct_upbd)
+    umap_visualization(data, struct_upbd)
 
     dataset = (data["x"], data["y"], data["base_labels"])
     vocab_size = data["x"].shape[-1]
-    hdmm1 = model(dataset, struct_upbd=struct_upbd, vocab_size=vocab_size, seed=60, gen_mixture=data["word_dists"], device="cpu")
+    hdmm1 = hdp_model(dataset, struct_upbd=struct_upbd, vocab_size=vocab_size, seed=60, gen_mixture=data["word_dists"], device="cpu")
     model_return1 = gibbs_sampler(jax.random.PRNGKey(0), hdmm1, struct_upbd, vocab_size, num_iters=52, gt=data, gen_ground_truth=True)
 
     data_summary(model_return1, data, struct_upbd)
