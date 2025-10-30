@@ -98,8 +98,8 @@ def nig_posterior(key, obs, params):
     new_mu = dist.Normal(mu, jnp.sqrt(new_sigma / kappa)).sample(sub)
     return [jnp.squeeze(new_mu), jnp.squeeze(new_sigma)]
 
-@jax.jit
-def gaussian_mixture_posterior(key, score, weight, components):
+
+def gaussian_mixture_posterior(key, score, weight, components, unknown_latent=False):
     """
     Sample category assignment for a single regression score given mixture weights and component distributions.
     Args:
@@ -113,15 +113,18 @@ def gaussian_mixture_posterior(key, score, weight, components):
     """
     reg_dist = dist.Normal(loc=components[0], scale=jnp.sqrt(components[1]))
     log_probs = reg_dist.log_prob(score)
-    un_normalized = log_probs + jnp.log(weight + 1e-12)
+    if unknown_latent:
+        un_normalized = log_probs
+    else:
+        un_normalized = log_probs + jnp.log(weight + 1e-12)
 
     cat_prob = jax.nn.softmax(un_normalized, axis=-1)
     key, sub = random.split(key)
     sample = dist.Categorical(probs=cat_prob).sample(sub)
     return sample, key
 
-@jax.jit
-def topic_mixture_posterior(sub, word, weight, components):
+
+def topic_mixture_posterior(sub, word, weight, components, unknown_latent=False):
     """
     Sample category assignment for a single word given mixture weights and component distributions.
     Args:
@@ -136,7 +139,10 @@ def topic_mixture_posterior(sub, word, weight, components):
 
     gen_dist = dist.Multinomial(total_count=1, probs=components)
     log_probs = gen_dist.log_prob(word)
-    un_normalized = log_probs + jnp.log(weight + 1e-12)
+    if unknown_latent:
+        un_normalized = log_probs
+    else:
+        un_normalized = log_probs + jnp.log(weight + 1e-12)
     cat_prob = jax.nn.softmax(un_normalized, axis=-1)
 
     sample = dist.Categorical(probs=cat_prob).sample(sub)
