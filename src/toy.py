@@ -14,22 +14,22 @@ from torch.utils.data import TensorDataset
 from model import DBM
 from torch.utils.data import DataLoader, RandomSampler
 import jax
+jax.config.update("jax_platform_name", "cpu")
 import jax.numpy as jnp
-import jax_hdmm
 import importlib
-importlib.reload(jax_hdmm)
-from jax_hdmm import hdp_model, gibbs_sampler, data_summary
+from hdmm import HDMM
 import pickle
-
-
-
+from vis import likelihood_visualization
 
 
 if __name__ == "__main__":
-    log_dir = './runs/Mutations-bits:1-L:2-nh:[3600, 2500]-lr:0.01-momentum:0-bs:1000-gamma:0.001-epoch:1000-seed:0-0UAqFzWs'
+    # log_dir = './runs/Mutations-bits:1-L:2-nh:[3600, 2500]-lr:0.01-momentum:0-bs:1000-gamma:0.001-epoch:1000-seed:0-0UAqFzWs'
+    log_dir = './runs/Mutations-bits:1-L:2-nh:[4900, 3600]-lr:0.005-momentum:0.9-bs:1000-gamma:0.0001-epoch:1000-seed:0-p2BZQXg2'
     model_path = 'models'
-    epoch = 360
-    dbm_model = DBM(size=1, nc=4801, nh=[3600, 2500], bits=1, L=2)
+    # epoch = 360
+    epoch = 220
+    # dbm_model = DBM(size=1, nc=4801, nh=[3600, 2500], bits=1, L=2)
+    dbm_model = DBM(size=1, nc=4801, nh=[4900, 3600], bits=1, L=2)
 
     checkpoint = torch.load(os.path.join(log_dir, model_path, f"model-{epoch}.pt"))
     try:
@@ -43,62 +43,61 @@ if __name__ == "__main__":
             raise e
     dbm_model.eval()
 
-    data = torch.load('cell_drug_response_samples.pt')
-    X = data['X']
-    y = data['y']
+    hdmm_model = HDMM(struct_upbd={"G0": 20, "G1": 6, "G2": 9}, vocab_size=3600)
+    M = 100
 
-    dataset = torch.utils.data.TensorDataset(data['X'], data['y'])
-    dataloader = DataLoader(dataset, batch_size=1000, shuffle=False)
+    data = torch.load('cell_drug_response_samples.pt')
+    X = data['X'][:5000]
+    y = data['y'][:5000]
+    data_size = X.shape[0]
+    print(f"Data size: {data_size}")
+
+    dataset = torch.utils.data.TensorDataset(X, y)
+    dataloader = DataLoader(dataset, batch_size=1000, shuffle=True)
     h_mode_list = []
     h_rand_list = []
     latent_logits_list = []
 
     y_list = []
-    for x_batch, y_batch in dataloader:
-        with torch.no_grad():
-            h_mode, h_rand, latent_logits = dbm_model.encode(x_batch)
-        h_mode_list.append(h_mode.numpy())
-        h_rand_list.append(h_rand.numpy())
-        latent_logits_list.append(latent_logits.numpy())
-        y_list.append(y_batch.numpy())
-    h_mode_all = np.vstack(h_mode_list)
-    h_rand_all = np.vstack(h_rand_list)
-    latent_logits_all = np.vstack(latent_logits_list)
-    y_all = np.hstack(y_list)
-
-    # Convert logits to probabilities
-    probs = jax.nn.softmax(jnp.array(latent_logits_all), axis=1)
+    i = -1
     key = jax.random.PRNGKey(0)
-    sample_size = 500
-    probs_slice = probs[:sample_size]
-    label_slice = jnp.array(y_all)[:sample_size]
+    for epoch in range(100):
+        print(f"Epoch {epoch} starting inference...")
+        for x_batch, y_batch in dataloader:
+            i += 1
+            with torch.no_grad():
+                h_mode, h_rand, latent_logits = dbm_model.encode(x_batch)
+            h_mode = h_mode.detach().numpy()
+            h_rand = h_rand.detach().numpy()
+            latent_logits = latent_logits.detach().numpy()
+            y_batch = y_batch.detach().numpy()
+            prob = jax.nn.softmax(jnp.array(latent_logits), axis=1)
+            N, D = prob.shape
+            logits_expanded = jnp.repeat(prob[:, None, :], M, axis=1)
+            logits_flat = logits_expanded.reshape(-1, D)  # (N*M, D)
 
-    # Sample one index per row
-    M = 200
-    N, D = probs_slice.shape
-    logits_expanded = jnp.repeat(probs_slice[:, None, :], M, axis=1)
+            # Sample all at once
+            key, subkey = jax.random.split(key)
+            samples_flat = jax.random.categorical(subkey, logits_flat, axis=-1)  # (N*M,)
+            samples = samples_flat.reshape(N, M)
+            one_hot_samples = jax.nn.one_hot(samples, num_classes=D)  # (N, M, D)
 
-    logits_flat = logits_expanded.reshape(-1, D)  # (N*M, D)
+            labels = jnp.array(y_batch)
 
-    # Sample all at once
-    key, subkey = jax.random.split(key)
-    samples_flat = jax.random.categorical(subkey, logits_flat, axis=-1)  # (N*M,)
-    samples = samples_flat.reshape(N, M)
-    one_hot_samples = jax.nn.one_hot(samples, num_classes=D)  # (N, M, D)
-
-    dataset = (one_hot_samples, label_slice)
-
-    vocab_size = D
-    struct_upbd = {"G0": 20, "G1": 5, "G2": 3}
-
-    hdmm14 = hdp_model(dataset, struct_upbd=struct_upbd, vocab_size=vocab_size, seed=60, known_base=False, known_super=False, gen_mixture=None, device="cpu")
-    model_return14 = gibbs_sampler(jax.random.PRNGKey(0), hdmm14, struct_upbd, vocab_size, num_iters=100, gt=None, file_prefix="hdmm14", known_base=False, known_super=False, gen_ground_truth=False)
-    data_summary(model_return14, data, struct_upbd, file_prefix="hdmm14")
-
-
-    # Save
-    with open("jax_model.pkl", "wb") as f:
-        pickle.dump(model_return14, f)
+            z_gen, z_reg, local_category_assignments, mc, doc_values, log_prob = hdmm_model.infer(one_hot_samples, labels, num_iters=300, key=key, epoch=epoch, datasize=data_size)
+            print(f"Batch {i} inference completed.")
+            likelihood_visualization(log_prob, np.zeros_like(log_prob), epoch=i, log_dir=f"./toy_results/epoch_{epoch}/")
+            state = {
+                "struct_params": hdmm_model.struct_params,
+                "mixture_components": hdmm_model.mixture_components,
+                "struct_values": hdmm_model.struct_values,
+            }
+            model_dir = "./toy_model_states/epoch_" + str(epoch)
+            if not os.path.exists(model_dir):
+                os.makedirs(model_dir)
+            with open(model_dir + f"/hdmm_model_state_after_batch_{i}.pkl", "wb") as f:
+                pickle.dump(state, f)
+            
 
     # # Load
     # with open("jax_model.pkl", "rb") as f:

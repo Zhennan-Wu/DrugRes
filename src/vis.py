@@ -2,6 +2,9 @@ from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
 import numpy as np
 import umap
+import os
+import jax.numpy as jnp
+import jax
 
 
 def tsne_visualization(data, struct_upbd, file_prefix):
@@ -144,4 +147,86 @@ def umap_visualization(data, struct_upbd, file_prefix):
             plt.ylim(0, child_mix_weights.max().item() * 1.1)
             plt.tight_layout()
             plt.savefig(f"{file_prefix}_child_category_super{j}_child{i}_weights.png")
+            plt.close()
+
+
+def likelihood_visualization(likelihood_mean, likelihood_std, epoch=0, log_dir="./"):
+    iterations = np.arange(1, len(likelihood_mean) + 1)
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+    # --- Plot setup ---
+    fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
+    ax.set_title("Likelihood Curves", fontsize=14, fontweight='bold')
+    ax.set_xlabel("Iterations", fontsize=12)
+    ax.set_ylabel("Likelihood", fontsize=12)
+
+    # Plot likelihood curve with shaded std
+    ax.plot(iterations, likelihood_mean, color='tab:orange', label='Likelihood', linewidth=2)
+    ax.fill_between(iterations,
+                    likelihood_mean - likelihood_std,
+                    likelihood_mean + likelihood_std,
+                    color='tab:orange',
+                    alpha=0.2)
+
+    ax.grid(True, linestyle='--', alpha=0.5)
+    ax.legend(fontsize=10, loc='best', frameon=True, fancybox=True, shadow=True)
+    fig.tight_layout()
+
+    # --- Save as image ---
+    save_path = os.path.join(log_dir, f"likelihood_curve_epoch_{epoch:04d}.png")
+    fig.savefig(save_path, dpi=300)
+
+    plt.close(fig)
+
+
+def hdmm_visualization(model, file_prefix):
+    for mix_idx, word_dist in enumerate(model.mixture_components["generation"]):
+        plt.figure(figsize=(6, 4), dpi=150)
+        plt.bar(range(word_dist.shape[0]), word_dist)
+        plt.title(f"Mixture Distribution Number {mix_idx}")
+        plt.xlabel("Word ID")
+        plt.ylabel("Weights")
+        plt.ylim(0, word_dist.max().item() * 1.1)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(f"{file_prefix}_hdmm_word_distribution_{mix_idx}.png")
+        plt.close()
+    
+    for reg_idx, mu, sigma in zip(np.arange(model.K), model.mixture_components["regression_mu"], model.mixture_components["regression_std"]):
+        plt.figure(figsize=(6, 4), dpi=150)
+        # generate x range
+        x = jnp.linspace(mu - 4*sigma, mu + 4*sigma, 400)
+
+        # pdf of normal distribution
+        pdf = jax.scipy.stats.norm.pdf(x, loc=mu, scale=sigma)
+
+        # plot
+        plt.figure(figsize=(6,4))
+        plt.plot(x, pdf, lw=2, label=fr'$\mathcal{{N}}({mu}, {sigma}^2)$')
+        plt.title("Regression Component Distribution Number {}".format(reg_idx))
+        plt.xlabel("x")
+        plt.ylabel("Density")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(f"{file_prefix}_hdmm_regression_distribution_{reg_idx}.png")
+        plt.close()
+    
+    for depth in range(len(model.cluster_dims)):
+        hierarchy_shape = model.cluster_dims[:depth+1]
+        grids = jnp.meshgrid(*[jnp.arange(n) for n in hierarchy_shape], indexing="ij")
+        hierarchy_cats = jnp.stack([g.ravel() for g in grids], axis=-1)
+        for cat in hierarchy_cats:
+            rev_idx = tuple(cat.tolist()[::-1])
+            plt.figure(figsize=(6, 4), dpi=150)
+            mix_weights = model.struct_value[f"G{depth}"][rev_idx]
+            plt.bar(range(mix_weights.shape[0]), mix_weights)
+            plt.title(f"Mixture Weights for Category Hierarchy {cat.tolist()}")
+            plt.xlabel("Mixture Component Index")
+            plt.ylabel("Weight")
+            plt.ylim(0, mix_weights.max().item() * 1.1)
+            plt.legend()
+            plt.tight_layout()
+            cat_str = "_".join([str(c) for c in cat.tolist()])
+            plt.savefig(f"{file_prefix}_hdmm_mixture_weights_category_hierarchy_{cat_str}.png")
             plt.close()
