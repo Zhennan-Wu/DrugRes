@@ -152,8 +152,6 @@ def umap_visualization(data, struct_upbd, file_prefix):
 
 def likelihood_visualization(likelihood_mean, likelihood_std, epoch=0, log_dir="./"):
     iterations = np.arange(1, len(likelihood_mean) + 1)
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
     # --- Plot setup ---
     fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
     ax.set_title("Likelihood Curves", fontsize=14, fontweight='bold')
@@ -173,10 +171,14 @@ def likelihood_visualization(likelihood_mean, likelihood_std, epoch=0, log_dir="
     fig.tight_layout()
 
     # --- Save as image ---
-    save_path = os.path.join(log_dir, f"likelihood_curve_epoch_{epoch:04d}.png")
-    fig.savefig(save_path, dpi=300)
-
-    plt.close(fig)
+    if log_dir is not None:
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+        save_path = os.path.join(log_dir, f"likelihood_curve_epoch_{epoch:04d}.png")
+        fig.savefig(save_path, dpi=300)
+        plt.close(fig)
+    else:
+        plt.show()
 
 
 def hdmm_visualization(model, file_prefix):

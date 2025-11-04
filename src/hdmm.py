@@ -21,6 +21,7 @@ class HDMM:
         self.init_tunable_hyperparameters()
         self.init_mixture_components()
         self.init_structure()
+        self.best_log_prob = -jnp.inf
 
     def init_tunable_hyperparameters(self):
         # Initialize tunable hyperparameters here
@@ -29,7 +30,7 @@ class HDMM:
         key, sub = jax.random.split(key)
         self.struct_params["gamma"]      = numpyro.param("model_gamma",      jax.random.uniform(sub, minval=0.0, maxval=100.0), constraint=constraints.positive)
         key, sub = jax.random.split(key)
-        self.struct_params["dir_alpha"]  = numpyro.param("model_dir_alpha",  jax.random.uniform(sub, minval=0.0, maxval=100.0), constraint=constraints.positive)
+        self.struct_params["dir_alpha"]  = numpyro.param("model_dir_alpha",  jax.random.uniform(sub, minval=0.0, maxval=1.0), constraint=constraints.positive)
         key, sub = jax.random.split(key)
         self.struct_params["nig_mu"]     = numpyro.param("model_nig_mu",     jax.random.uniform(sub, minval=0.0, maxval=100.0))
         key, sub = jax.random.split(key)
@@ -79,6 +80,7 @@ class HDMM:
         # ---------------
         key = jax.random.PRNGKey(1)
         self.struct_values = {}
+        self.best_struct_values = {}
 
         # Top-level Beta sticks B0 -> G0 weights
 
@@ -93,6 +95,12 @@ class HDMM:
         self.struct_values["Posterior0"] = copy.deepcopy(self.struct_values["P0"])
         self.struct_values["G0"] = mix_weights(beta_0)  # (K0,)
         assert self.struct_values["G0"].shape == (self.K,)
+
+        self.best_struct_values["P0"] = copy.deepcopy(self.struct_values["P0"])
+        self.best_struct_values["Prior0"] = copy.deepcopy(self.struct_values["Prior0"])
+        self.best_struct_values["Posterior0"] = copy.deepcopy(self.struct_values["Posterior0"])
+        self.best_struct_values["G0"] = copy.deepcopy(self.struct_values["G0"])
+        
 
         # Lower levels
         for parent_level in range(len(self.struct_upbd) - 1):
@@ -121,6 +129,11 @@ class HDMM:
             assert self.struct_values[f"P{child_level}"][0].shape == tuple(self.param_dims[-full_dim:])
             assert self.struct_values[f"P{child_level}"][1].shape == tuple(self.param_dims[-full_dim:])
 
+            self.best_struct_values[f"P{child_level}"] = copy.deepcopy(self.struct_values[f"P{child_level}"])
+            self.best_struct_values[f"Prior{child_level}"] = copy.deepcopy(self.struct_values[f"Prior{child_level}"])
+            self.best_struct_values[f"Posterior{child_level}"] = copy.deepcopy(self.struct_values[f"Posterior{child_level}"])
+            self.best_struct_values[f"G{child_level}"] = copy.deepcopy(self.struct_values[f"G{child_level}"])
+
         # ---------------
         # Cluster weights
         # ---------------
@@ -141,6 +154,11 @@ class HDMM:
             self.struct_values[f"LG{parent_level}"] = mix_weights(beta)  # categorical probs over next level
             assert self.struct_values[f"LG{parent_level}"].shape == tuple(self.cluster_dims[:child_level])
 
+            self.best_struct_values[f"LP{parent_level}"] = copy.deepcopy(self.struct_values[f"LP{parent_level}"])
+            self.best_struct_values[f"LPrior{parent_level}"] = copy.deepcopy(self.struct_values[f"LPrior{parent_level}"])
+            self.best_struct_values[f"LPosterior{parent_level}"] = copy.deepcopy(self.struct_values[f"LPosterior{parent_level}"])
+            self.best_struct_values[f"LG{parent_level}"] = copy.deepcopy(self.struct_values[f"LG{parent_level}"])
+
     def init_mixture_components(self):
         # -----------------------
         # Mixture components
@@ -149,14 +167,15 @@ class HDMM:
         self.vocab_size = self.kwargs.get("vocab_size", 10000)
         key = jax.random.PRNGKey(2)
 
-        self.mixture_components_prior = {}
+        self.mixture_components = {}
 
         key, sub = jax.random.split(key)
-        self.mixture_components_prior["generation"] = dist.Dirichlet(
+        self.mixture_components["generation"] = dist.Dirichlet(
                 self.struct_params["dir_alpha"]
                 * jnp.ones((self.vocab_size))
             ).sample(sub, sample_shape=(self.K,))
-        assert self.mixture_components_prior["generation"].shape == (self.K, self.vocab_size)
+        assert self.mixture_components["generation"].shape == (self.K, self.vocab_size)
+
         # Regression components via NIG prior
         key, sub = jax.random.split(key)
         sigma = dist.InverseGamma(
@@ -170,10 +189,11 @@ class HDMM:
                 jnp.sqrt(sigma / jnp.broadcast_to(self.struct_params["nig_kappa"], (self.K,)))
             ).sample(sub)
         assert mu.shape == (self.K,)
-        self.mixture_components_prior["regression_sigma"] = sigma
-        self.mixture_components_prior["regression_mu"] = mu
-        self.mixture_components_posterior = copy.deepcopy(self.mixture_components_prior)
-        self.mixture_components = copy.deepcopy(self.mixture_components_prior)
+        self.mixture_components["regression_sigma"] = sigma
+        self.mixture_components["regression_mu"] = mu
+
+        self.mixture_components_posterior = copy.deepcopy(self.mixture_components)
+        self.best_mixture_components = copy.deepcopy(self.mixture_components)
 
     def init_latent_variables(self, obs, *args, **kwargs):
         key = jax.random.PRNGKey(5)
@@ -225,23 +245,58 @@ class HDMM:
     
     def update_struct_posterior(self, lr):
         for parent_level in range(len(self.struct_upbd)):
-            self.struct_values[f"Posterior{parent_level}"][0] = (1-lr)*self.struct_values[f"Posterior{parent_level}"][0] + lr*self.struct_values[f"P{parent_level}"][0]
-            self.struct_values[f"Posterior{parent_level}"][1] = (1-lr)*self.struct_values[f"Posterior{parent_level}"][1] + lr*self.struct_values[f"P{parent_level}"][1]
+            self.best_struct_values[f"Posterior{parent_level}"][0] = (1-lr)*self.best_struct_values[f"Posterior{parent_level}"][0] + lr*self.best_struct_values[f"P{parent_level}"][0]
+            self.best_struct_values[f"Posterior{parent_level}"][1] = (1-lr)*self.best_struct_values[f"Posterior{parent_level}"][1] + lr*self.best_struct_values[f"P{parent_level}"][1]
+            # self.struct_values[f"Posterior{parent_level}"][0] = copy.deepcopy(self.best_struct_values[f"Posterior{parent_level}"][0])
+            # self.struct_values[f"Posterior{parent_level}"][1] = copy.deepcopy(self.best_struct_values[f"Posterior{parent_level}"][1])
             if (parent_level < len(self.struct_upbd) - 1):
-                self.struct_values[f"LPosterior{parent_level}"][0] = (1-lr)*self.struct_values[f"LPosterior{parent_level}"][0] + lr*self.struct_values[f"LP{parent_level}"][0]
-                self.struct_values[f"LPosterior{parent_level}"][1] = (1-lr)*self.struct_values[f"LPosterior{parent_level}"][1] + lr*self.struct_values[f"LP{parent_level}"][1]
+                self.best_struct_values[f"LPosterior{parent_level}"][0] = (1-lr)*self.best_struct_values[f"LPosterior{parent_level}"][0] + lr*self.best_struct_values[f"LP{parent_level}"][0]
+                self.best_struct_values[f"LPosterior{parent_level}"][1] = (1-lr)*self.best_struct_values[f"LPosterior{parent_level}"][1] + lr*self.best_struct_values[f"LP{parent_level}"][1]
+                # self.struct_values[f"LPosterior{parent_level}"][0] = copy.deepcopy(self.best_struct_values[f"LPosterior{parent_level}"][0])
+                # self.struct_values[f"LPosterior{parent_level}"][1] = copy.deepcopy(self.best_struct_values[f"LPosterior{parent_level}"][1])
 
-        self.mixture_components_posterior["generation"] = (1-lr)*self.mixture_components_posterior["generation"] + lr*self.mixture_components["generation"]
-        self.mixture_components_posterior["regression_mu"] = (1-lr)*self.mixture_components_posterior["regression_mu"] + lr*self.mixture_components["regression_mu"]
-        self.mixture_components_posterior["regression_sigma"] = (1-lr)*self.mixture_components_posterior["regression_sigma"] + lr*self.mixture_components["regression_sigma"]
-    
-    def update_struct_prior(self):
+        self.mixture_components_posterior["generation"] = (1-lr)*self.mixture_components_posterior["generation"] + lr*self.best_mixture_components["generation"]
+        self.mixture_components_posterior["regression_mu"] = (1-lr)*self.mixture_components_posterior["regression_mu"] + lr*self.best_mixture_components["regression_mu"]
+        self.mixture_components_posterior["regression_sigma"] = (1-lr)*self.mixture_components_posterior["regression_sigma"] + lr*self.best_mixture_components["regression_sigma"]
+
+    def set_struct_to_best(self):
+        self.struct_values = copy.deepcopy(self.best_struct_values)
+        self.mixture_components = copy.deepcopy(self.best_mixture_components)
+
+    def update_best_struct(self, log_prob, predict=False, **kwargs):
+        if log_prob > self.best_log_prob:
+            self.best_log_prob = log_prob
+            self.best_struct_values = copy.deepcopy(self.struct_values)
+            self.best_mixture_components = copy.deepcopy(self.mixture_components)
+            self.best_z_gen = copy.deepcopy(kwargs.get("z_gen"))
+            self.best_z_reg = copy.deepcopy(kwargs.get("z_reg"))
+            self.best_local_category_assignments = copy.deepcopy(kwargs.get("local_category_assignments"))
+            self.best_doc_values = copy.deepcopy(kwargs.get("doc_values"))
+
+    def update_best_latent(self, **kwargs):
+        self.best_z_gen = copy.deepcopy(kwargs.get("z_gen"))
+        self.best_z_reg = copy.deepcopy(kwargs.get("z_reg"))
+        self.best_local_category_assignments = copy.deepcopy(kwargs.get("local_category_assignments"))
+        self.best_doc_values = copy.deepcopy(kwargs.get("doc_values"))
+
+    def update_struct_prior(self, key_int):
+        key = jax.random.PRNGKey(key_int)
         for parent_level in range(len(self.struct_upbd)):
-            self.struct_values[f"Prior{parent_level}"][0] = copy.deepcopy(self.struct_values[f"P{parent_level}"][0])
-            self.struct_values[f"Prior{parent_level}"][1] = copy.deepcopy(self.struct_values[f"P{parent_level}"][1])
+            self.struct_values[f"Prior{parent_level}"][0] = copy.deepcopy(self.struct_values[f"Posterior{parent_level}"][0])
+            self.struct_values[f"Prior{parent_level}"][1] = copy.deepcopy(self.struct_values[f"Posterior{parent_level}"][1])
+            self.struct_values[f"P{parent_level}"][0] = copy.deepcopy(self.struct_values[f"Prior{parent_level}"][0])
+            self.struct_values[f"P{parent_level}"][1] = copy.deepcopy(self.struct_values[f"Prior{parent_level}"][1])
+            key, sub = jax.random.split(key)
+            self.struct_values[f"G{parent_level}"] = mix_weights(dist.Beta(self.struct_values[f"P{parent_level}"][0], self.struct_values[f"P{parent_level}"][1]).sample(sub))
             if (parent_level < len(self.struct_upbd) - 1):
-                self.struct_values[f"LPrior{parent_level}"][0] = copy.deepcopy(self.struct_values[f"LP{parent_level}"][0])
-                self.struct_values[f"LPrior{parent_level}"][1] = copy.deepcopy(self.struct_values[f"LP{parent_level}"][1])
+                self.struct_values[f"LPrior{parent_level}"][0] = copy.deepcopy(self.best_struct_values[f"LPosterior{parent_level}"][0])
+                self.struct_values[f"LPrior{parent_level}"][1] = copy.deepcopy(self.best_struct_values[f"LPosterior{parent_level}"][1])
+                self.struct_values[f"LP{parent_level}"][0] = copy.deepcopy(self.struct_values[f"LPrior{parent_level}"][0])
+                self.struct_values[f"LP{parent_level}"][1] = copy.deepcopy(self.struct_values[f"LPrior{parent_level}"][1])
+                key, sub = jax.random.split(key)
+                self.struct_values[f"LG{parent_level}"] = mix_weights(dist.Beta(self.struct_values[f"LP{parent_level}"][0], self.struct_values[f"LP{parent_level}"][1]).sample(sub))
+        
+        self.mixture_components = copy.deepcopy(self.mixture_components_posterior)
 
     def forward(self, obs, *args, **kwargs):
         z_gen, z_reg, local_category_assignments, mc, log_prob = self.gibbs_update(obs, *args, **kwargs)
@@ -250,28 +305,26 @@ class HDMM:
     def predict(self, obs, *args, **kwargs):
         num_iters = kwargs.get("num_iters", 100)
         key = kwargs.get("key", jax.random.PRNGKey(3))
+        self.set_struct_to_best()
 
         N, M, _ = obs.shape
 
         reg = args[0] if len(args) > 0 else None
         
-        log_prob = []
+        log_probs = []
 
         z_gen, z_reg, local_category_assignments, doc_values = self.init_latent_variables(obs, *args, **kwargs)
+        self.update_best_latent(z_gen=z_gen, z_reg=z_reg, local_category_assignments=local_category_assignments, doc_values=doc_values)
 
         pbar = trange(num_iters, desc="Inference Gibbs Sampling")
         for it in pbar:
-            if (it == 0):
-                unknown_latent = True
-            else:
-                unknown_latent = False
 
             # ------------------------
             # Sample document-level weights and word/regression categories
             # ------------------------
 
             key, sub = jax.random.split(key)
-            z_gen = self.vectorized_word_cat_gibbs(sub, obs, doc_values["G"], unknown_latent=unknown_latent)
+            z_gen = self.vectorized_word_cat_gibbs(sub, obs, doc_values["G"])
 
             key, sub = jax.random.split(key)
             doc_values = self.vectorized_doc_weight_gibbs(
@@ -279,24 +332,29 @@ class HDMM:
                 doc_values,
                 z_gen,
                 z_reg,
-                unknown_latent=unknown_latent,
+                scale_constant=1.0,
                 predict=True
             )
 
             for depth in range(len(self.cluster_dims)):
                 key, sub = jax.random.split(key)
-                local_category_assignments = self.infer_doc_cats(sub, depth, doc_values, local_category_assignments)
+                cats, probs = self.collapsed_doc_cats_gibbs_batch(sub, depth, obs, reg, z_gen, z_reg, local_category_assignments, predict=True)
+                local_category_assignments = local_category_assignments.at[:, depth].set(cats)
 
             doc_values = self.update_doc_prior_batch(doc_values, local_category_assignments)
 
-            log_prob.append(self.compute_log_likelihood(obs, z_gen, z_reg, reg, predict=True))
+            log_prob = self.compute_log_likelihood(obs, z_gen, z_reg, reg, predict=True)
+            if log_prob > max(log_probs, default=-jnp.inf):
+                self.update_best_latent(z_gen=z_gen, z_reg=z_reg, local_category_assignments=local_category_assignments, doc_values=doc_values)
+            log_probs.append(log_prob)
             pbar.set_description(f"Inference Gibbs Sampling (Iter {it+1}) LogProb {log_prob[-1]:.2f}")
 
-        return local_category_assignments, doc_values["G"], np.array(log_prob)
+        return z_gen, z_reg, local_category_assignments, doc_values, np.array(log_probs)
 
     def infer(self, obs, *args, **kwargs):
         lr = kwargs.get("lr", 0.1)
         self.update_struct_posterior(lr)
+        self.set_struct_to_best()
         num_iters = kwargs.get("num_iters", 100)
         key = kwargs.get("key", jax.random.PRNGKey(4))
         known_cats = kwargs.get("known_cats", None)
@@ -314,10 +372,11 @@ class HDMM:
 
         reg = args[0] if len(args) > 0 else None
         
-        log_prob = []
+        log_probs = []
 
         mc = self.init_markov_chain()   
         z_gen, z_reg, local_category_assignments, doc_values = self.init_latent_variables(obs, *args, **kwargs)
+        self.update_best_latent(z_gen=z_gen, z_reg=z_reg, local_category_assignments=local_category_assignments, doc_values=doc_values)
         
         if known_words is not None:
             z_gen = known_words
@@ -331,18 +390,26 @@ class HDMM:
             self.mixture_components["generation"] = known_mixtures["generation"]
 
         pbar = trange(num_iters, desc="Gibbs Sampling")
+        # def inside_get_doc_weights(rev_idx):
+        #     weight = partial_index(self.struct_values[f"G{len(self.cluster_dims)}"], rev_idx)
+        #     return weight
+        
         for it in pbar:
-
             # ------------------------
             # Sample document-level weights and word/regression categories
             # ------------------------
+            # weight = jax.vmap(inside_get_doc_weights)(jnp.flip(local_category_assignments, axis=1))
             if (known_words is None):
                 key, sub = jax.random.split(key)
+                
+                # z_gen = self.vectorized_word_cat_gibbs(sub, obs, weight)
                 z_gen = self.vectorized_word_cat_gibbs(sub, obs, doc_values["G"])
                 # print("z_gen:", z_gen.shape)
 
             key, sub = jax.random.split(key)
+            # z_reg = self.vectorized_reg_cat_gibbs(sub, reg, weight)
             z_reg = self.vectorized_reg_cat_gibbs(sub, reg, doc_values["G"])
+            # print("z_reg shape:", z_reg.shape)
 
             key, sub = jax.random.split(key)
             doc_values = self.vectorized_doc_weight_gibbs(
@@ -392,6 +459,17 @@ class HDMM:
             if (known_struct is not None):
                 for depth, struct_val in known_struct.items():
                     self.struct_values[f"G{depth+1}"] = struct_val
+                    
+                    if depth > 0:
+                        unique_rows, positions = get_unique_rows_and_positions(local_category_assignments[:, :depth])
+                    else:
+                        unique_rows = [(slice(None),)]
+                        positions = [(slice(None),)]
+                    for row, row_idx in zip(unique_rows, positions):
+                        key, sub = jax.random.split(key)
+                        if (depth < len(self.cluster_dims)):
+                            key, sub = jax.random.split(key)
+                            self.struct_cluster_gibbs(sub, depth, row_idx, row, local_category_assignments, scale_constant)
             else:
                 for depth in range(len(self.param_dims)):
                     if depth > 0:
@@ -411,7 +489,11 @@ class HDMM:
                             key, sub = jax.random.split(key)
                             self.struct_cluster_gibbs(sub, depth, row_idx, row, local_category_assignments, scale_constant)
 
-            log_prob.append(self.compute_log_likelihood(obs, z_gen, z_reg, reg))
+            log_prob = self.compute_log_likelihood(obs, z_gen, z_reg, reg)
+            self.update_best_struct(log_prob, z_gen=z_gen, z_reg=z_reg, local_category_assignments=local_category_assignments, doc_values=doc_values)
+            log_probs.append(log_prob)
+            if (it > 0 and it % 50 == 0):
+                likelihood_visualization(np.array(log_prob), np.zeros_like(np.array(log_prob)), epoch=it, log_dir=None)
 
             mc = self.update_markov_chain(mc)
             pbar.set_description(f"Gibbs Sampling (Iter {it+1}) LogProb {log_prob[-1]:.2f}")
@@ -670,10 +752,12 @@ class HDMM:
             word_samples = jax.vmap(
                 lambda k, w: self.word_cat_gibbs(k, w, doc_weight)
             )(word_keys, obs_doc)
+            # print("word_samples shape:", word_samples.shape)
             return word_samples
 
         # Vectorize across documents
         z_gen = jax.vmap(sample_doc)(doc_keys, obs, doc_weights)
+        # print("z_gen shape:", z_gen.shape)
         return z_gen
 
     def vectorized_reg_cat_gibbs(self, key, reg, doc_weights):
@@ -828,24 +912,29 @@ class HDMM:
 
             assert weight.shape[0] == self.cluster_dims[depth], "Weight shape mismatch."
             # --- Word-level likelihoods (vectorized over words) ---
-            def word_log_prob(word, label):
-                word_log_prob = dist.Multinomial(
-                    total_count=1,
-                    probs=self.mixture_components["generation"][label]
-                ).log_prob(word)
-                cat_log_prob = jnp.broadcast_to(word_log_prob, (weight.shape[0],))
-                return cat_log_prob + jnp.log(weight[:, label] + 1e-12)
+            # def word_log_prob(word, label):
+            #     word_log_prob = dist.Multinomial(
+            #         total_count=1,
+            #         probs=self.mixture_components["generation"][label]
+            #     ).log_prob(word)
+            #     cat_log_prob = jnp.broadcast_to(word_log_prob, (weight.shape[0],))
+            #     return cat_log_prob + jnp.log(weight[:, label] + 1e-12)
 
-            log_prob_words = jax.vmap(word_log_prob)(obs_i, z_gen_i).sum(axis=0)
-            log_prob = log_prob_words
-
+            # log_prob_words = jax.vmap(word_log_prob)(obs_i, z_gen_i).sum(axis=0)
+            # log_prob = log_prob_words
             # --- Regression term ---
-            if not predict:
-                log_prob += jnp.broadcast_to(dist.Normal(
-                    loc=self.mixture_components["regression_mu"][z_reg_i],
-                    scale=self.mixture_components["regression_sigma"][z_reg_i],
-                ).log_prob(reg_i), (weight.shape[0],)) + jnp.log(weight[:, z_reg_i] + 1e-12)
+            # if not predict:
+            #     log_prob += jnp.broadcast_to(dist.Normal(
+            #         loc=self.mixture_components["regression_mu"][z_reg_i],
+            #         scale=self.mixture_components["regression_sigma"][z_reg_i],
+            #     ).log_prob(reg_i), (weight.shape[0],)) + jnp.log(weight[:, z_reg_i] + 1e-12)
 
+            cat_counts = jnp.bincount(z_gen_i, length=self.K)
+            if not predict:
+                cat_counts = cat_counts + jnp.bincount(jnp.atleast_1d(z_reg_i), length=self.K)
+            log_prob = jnp.log(weight + 1e-12) * jnp.broadcast_to(jnp.expand_dims(cat_counts, axis=0), weight.shape)
+            log_prob = jnp.sum(log_prob, axis=1)
+                        
             # --- Category sampling ---
             unnorm = log_prob + jnp.log(cluster_weight + 1e-12)
             prob = jax.nn.softmax(unnorm)

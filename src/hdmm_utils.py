@@ -144,7 +144,7 @@ def gaussian_mixture_posterior(sub, score, weight, components, unknown_latent=Fa
     return sample
 
 
-def topic_mixture_posterior(sub, word, weight, components, unknown_latent=False):
+def topic_mixture_posterior(sub, word, weight, components):
     """
     Sample category assignment for a single word given mixture weights and component distributions.
     Args:
@@ -161,12 +161,10 @@ def topic_mixture_posterior(sub, word, weight, components, unknown_latent=False)
     log_probs = gen_dist.log_prob(word)
     # print("log_probs:", log_probs.shape)
     # print("word:", word.shape)
+    # print("components:", components.shape)
 
     # print("weight:", weight.shape)
-    if unknown_latent:
-        un_normalized = log_probs
-    else:
-        un_normalized = log_probs + jnp.log(weight + 1e-12)
+    un_normalized = log_probs + jnp.log(weight + 1e-12)
     cat_prob = jax.nn.softmax(un_normalized, axis=-1)
     # print("cat_prob:", cat_prob.shape)
 
