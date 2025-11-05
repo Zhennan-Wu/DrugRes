@@ -50,7 +50,7 @@ class DBM(nn.Module):
                 energy_pos = self.marginal_energy(v, None, True)
             else:
                 v, h, _ = self.gibbs_step(v, None, True,
-                                       torch.ones(N, device=device))
+                                       torch.ones(N, device=device), torch.ones(N, device=device))
                 energy_pos = self.energy(v, h)
         else:
             h = []
@@ -120,7 +120,8 @@ class DBM(nn.Module):
     def coupling(self, v, h, fix_v=False):
         N = v.size(0)
         device = v.device
-        _v, _h = deepcopy((v, h))
+        _v = v.clone().detach()
+        _h = [hi.clone().detach() for hi in h]
 
         v, h = self.mh_step(v, h, fix_v)
         energy = self.energy(v, h)
@@ -129,7 +130,9 @@ class DBM(nn.Module):
                     else torch.all(v == _v, 1)
         for i in range(self.L):
             converged = converged.logical_and(torch.all(h[i] == _h[i], 1))
-
+        if not converged.all():
+            v = v.clone()
+            h = [hi.clone() for hi in h]
         while not converged.all():
             not_converged = converged.logical_not()
             _v = v[not_converged]
@@ -189,7 +192,9 @@ class DBM(nn.Module):
         N = v.size(0)
         device = v.device
 
-        v_, h_ = deepcopy((v, h))
+        v_ = v.clone().detach()
+        h_ = [hi.clone().detach() for hi in h] if h is not None else [torch.empty(N, self.nh[i],
+                                                                   device=device) for i in range(self.L)]
 
         if rand_u is None:
             rand_u = torch.rand(N, device=device)
@@ -224,8 +229,10 @@ class DBM(nn.Module):
 
                 if T == 0:
                     if i+1 == len(h):
+                        indices = logits.argmax(dim=-1)
+                        h_[i] = h_[i].clone()
                         h_[i][even] = torch.zeros_like(logits)
-                        h_[i][even][logits.argmax(dim=-1)] = self.nMult
+                        h_[i][even][torch.arange(logits.size(0)), indices] = self.nMult
                     else:
                         h_[i][even] = (logits >= 0).float()
                 else:
@@ -252,8 +259,10 @@ class DBM(nn.Module):
 
                 if T == 0:
                     if i+1 == len(h):
+                        indices = logits.argmax(dim=-1)
+                        h_[i] = h_[i].clone()
                         h_[i][even] = torch.zeros_like(logits)
-                        h_[i][even][logits.argmax(dim=-1)] = self.nMult
+                        h_[i][even][torch.arange(logits.size(0)), indices] = self.nMult
                     else:
                         h_[i][even] = (logits >= 0).float()
                 else:
@@ -281,8 +290,10 @@ class DBM(nn.Module):
 
                 if T == 0:
                     if i+1 == len(h):
+                        indices = logits.argmax(dim=-1)
+                        h_[i] = h_[i].clone()
                         h_[i][odd] = torch.zeros_like(logits)
-                        h_[i][odd][logits.argmax(dim=-1)] = self.nMult
+                        h_[i][odd][torch.arange(logits.size(0)), indices] = self.nMult
                     else:
                         h_[i][odd] = (logits >= 0).float()
                 else:
@@ -323,8 +334,10 @@ class DBM(nn.Module):
 
                 if T == 0:
                     if i+1 == len(h):
+                        indices = logits.argmax(dim=-1)
+                        h_[i] = h_[i].clone()
                         h_[i][odd] = torch.zeros_like(logits)
-                        h_[i][odd][logits.argmax(dim=-1)] = self.nMult
+                        h_[i][odd][torch.arange(logits.size(0)), indices] = self.nMult
                     else:
                         h_[i][odd] = (logits >= 0).float()
                 else:

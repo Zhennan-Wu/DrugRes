@@ -5,9 +5,17 @@ from torch import nn
 import torch.nn.functional as F
 from torch.distributions import Bernoulli, Independent, Multinomial, Normal
 
+def print_versions(h, tag):
+    if isinstance(h, (list, tuple)):
+        versions = [x._version if isinstance(x, torch.Tensor) else None for x in h]
+        shapes = [tuple(x.shape) if isinstance(x, torch.Tensor) else None for x in h]
+        print(f"{tag}: versions={versions}, shapes={shapes}")
+    else:
+        print(f"{tag}: version={h._version}, shape={tuple(h.shape)}")
+
 
 class DBM(nn.Module):
-    def __init__(self, nv, nh=None, ny=1, L=2, nMult=100, y_sigma=0.1, rho=0.5, known_y=True):
+    def __init__(self, nv, nh=None, ny=1, L=2, nMult=100, y_sigma=1., rho=0.1, known_y=True):
         super().__init__()
         if nh is None:
             nh = [nv] * L
@@ -26,7 +34,6 @@ class DBM(nn.Module):
         self.y_sigma = y_sigma
         self.rho = rho
         self.known_y = known_y
-
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -53,18 +60,21 @@ class DBM(nn.Module):
 
         if self.L == 1:
             v, y, h, _ = self.gibbs_step(v, y, None, True, True,
-                                    torch.ones(N, device=device))
+                                    torch.ones(N, device=device), torch.ones(N, device=device))
             energy_pos = self.energy(v, y, h)
         else:
             h = []
             for i in range(self.L):
                 h_i = torch.empty(N, self.nh[i], device=device).bernoulli_()
+                # print_versions(h_i, "created h")
                 h.append(h_i)
 
             v, y, h = self.local_search(v, y, h, True, True)
+            # print_versions(h, "after local search")
             v, y, h, _ = self.gibbs_step(v, y, h, True, True)
+            # print_versions(h, "after gibbs step")
 
-            energy_pos, v, h = self.coupling(v, y, h, True, True)
+            energy_pos, v, y, h = self.coupling(v, y, h, True, True)
 
         # Negative phase
         v = torch.empty_like(v).bernoulli_()
@@ -73,12 +83,16 @@ class DBM(nn.Module):
         h = []
         for i in range(self.L):
             h_i = torch.empty(N, self.nh[i], device=device).bernoulli_()
+            # print_versions(h_i, "created h (neg phase)")
             h.append(h_i)
 
         v, y, h = self.local_search(v, y, h)
+        # print_versions(h, "after local search (neg phase)")
         v, y, h, _ = self.gibbs_step(v, y, h)
+        # print_versions(h, "after gibbs step (neg phase)")
 
         energy_neg, v, y, h = self.coupling(v, y, h)
+        # print_versions(h, "after coupling (neg phase)")
 
         loss = energy_pos - energy_neg
 
@@ -90,7 +104,9 @@ class DBM(nn.Module):
         device= v.device
 
         rand_u = torch.rand(N, device=device)
-        _v, _y, _h = deepcopy((v, y, h))
+        _v = v.clone().detach()
+        _y = y.clone().detach()
+        _h = [hi.clone().detach() for hi in h]
         v, y, h, _ = self.gibbs_step(v, y, h, fix_v, fix_y, rand_u=rand_u, T=0)
 
         converged = torch.ones(N, dtype=torch.bool, device=device) if fix_v \
@@ -101,6 +117,11 @@ class DBM(nn.Module):
         for i in range(self.L):
             converged = converged.logical_and(torch.all(h[i] == _h[i], 1))
 
+        if not converged.all():
+            v = v.clone().detach()
+            y = y.clone().detach()
+            h = [hi.clone().detach() for hi in h]
+            
         while not converged.all():
             not_converged = converged.logical_not()
             _v = v[not_converged]
@@ -132,10 +153,12 @@ class DBM(nn.Module):
 
         return v, y, h
 
-    def coupling(self, v, y, h, fix_v=False, fix_y=False):
+    def coupling(self, v, y, h, fix_v=False, fix_y=False, max_iter=100):
         N = v.size(0)
         device = v.device
-        _v, _y, _h = deepcopy((v, y, h))
+        _v = v.clone().detach()
+        _y = y.clone().detach()
+        _h = [hi.clone().detach() for hi in h]
 
         v, y, h = self.mh_step(v, y, h, fix_v, fix_y)
         energy = self.energy(v, y, h)
@@ -149,43 +172,57 @@ class DBM(nn.Module):
 
         for i in range(self.L):
             converged = converged.logical_and(torch.all(h[i] == _h[i], 1))
+        # print("mh iteration counting")
+        iteration = 0
+        if not converged.all():
+            v = v.clone()
+            y = y.clone()
+            h = [hi.clone() for hi in h]
+        while not converged.all() and iteration < max_iter:
+            iteration += 1
+            # print(f"  iteration {iteration}, not converged: {converged.logical_not().sum().item()}")
+            with torch.no_grad():
+                not_converged = converged.logical_not()
+                idx = not_converged.nonzero(as_tuple=True)[0]
+                _v = v[not_converged]
+                _y = y[not_converged]
+                _h = [h[i][not_converged] for i in range(self.L)]
+                M = _v.size(0)
 
-        while not converged.all():
-            not_converged = converged.logical_not()
-            _v = v[not_converged]
-            _y = y[not_converged]
-            _h = [h[i][not_converged] for i in range(self.L)]
-            M = _v.size(0)
+                rand_v = None if fix_v else torch.rand_like(_v)
+                rand_y = None if fix_y else torch.randn_like(_y)
+                rand_h = [torch.rand_like(_h[i]) for i in range(self.L)]
+                rand_u = torch.rand(M, device=device)
 
-            rand_v = None if fix_v else torch.rand_like(_v)
-            rand_y = None if fix_y else torch.rand_like(_y)
-            rand_h = [torch.rand_like(_h[i]) for i in range(self.L)]
-            rand_u = torch.rand(M, device=device)
+                v_, y_, h_ = self.mh_step(_v, _y, _h, fix_v, fix_y, rand_v, rand_y, rand_h, rand_u)
+            energy[not_converged] = energy[not_converged] + self.energy(v_, y_, h_) - self.energy(_v, _y, _h)
+            with torch.no_grad():
+                if fix_v:
+                    converged_ = torch.ones(M, dtype=torch.bool, device=device)
+                else:
+                    converged_ = torch.all(v_ == _v, 1)
+                    v[not_converged] = v_
+                    # v.index_copy_(0, idx, v_)
 
-            v_, y_, h_ = self.mh_step(_v, _y, _h, fix_v, fix_y, rand_v, rand_y, rand_h, rand_u)
-            energy[not_converged] += self.energy(v_, y_, h_) - self.energy(_v, _y, _h)
+                if fix_y:
+                    pass
+                else:
+                    converged_ = converged_.logical_and(torch.all(y_ == _y, 1))
+                    y[not_converged] = y_
+                    # y.index_copy_(0, idx, y_)
 
-            if fix_v:
-                converged_ = torch.ones(M, dtype=torch.bool, device=device)
-            else:
-                converged_ = torch.all(v_ == _v, 1)
-                v[not_converged] = v_
+                for i in range(self.L):
+                    converged_ = converged_.logical_and(torch.all(h_[i] == _h[i], 1))
+                    h[i][not_converged] = h_[i]
+                    # h[i].index_copy_(0, idx, h_[i])
 
-            if fix_y:
-                pass
-            else:
-                converged_ = converged_.logical_and(torch.all(y_ == _y, 1))
-                y[not_converged] = y_
-
-            for i in range(self.L):
-                converged_ = converged_.logical_and(torch.all(h_[i] == _h[i], 1))
-                h[i][not_converged] = h_[i]
-
-            converged[not_converged] = converged_
+                converged[not_converged] = converged_
+        if iteration == max_iter:
+            print("Warning: coupling MH did not converge within max_iter")
 
         return energy, v, y, h
 
-    def energy(self, v, y, h):
+    def energy(self, v, y, h, show=False):
         energy_gen = - torch.sum(v * self.bias[0].unsqueeze(0), 1)
 
         for i in range(self.L):
@@ -194,12 +231,18 @@ class DBM(nn.Module):
 
             energy_gen = energy_gen - torch.sum(h[i] * logits, 1)
 
-        energy_reg = 0.5 * torch.sum((y-self.bias[-1].unsqueeze(0))**2, 1) / (self.y_sigma**2)
+        energy_reg = torch.sum((y-self.bias[-1].unsqueeze(0))**2, 1) / (2.*(self.y_sigma**2)) 
+        logits = F.linear(y/(self.y_sigma**2),
+                            self.weight[-1].t(), self.bias[-2])
+        energy_reg = energy_reg - torch.sum(h[-1] * logits, 1)
 
-        for i in range(self.L):
-            logits = F.linear(y/self.y_sigma**2 if i == 0 else h[-i],
-                              self.weight[-i-1].t(), self.bias[-i-2])
-            energy_reg = energy_reg - torch.sum(h[-i-1] * logits, 1)
+        # for i in range(self.L):
+        #     logits = F.linear(y/self.y_sigma**2 if i == 0 else h[-i],
+        #                       self.weight[-i-1].t(), self.bias[-i-2])
+        #     energy_reg = energy_reg - torch.sum(h[-i-1] * logits, 1)
+        if show:     
+            print("energy_gen:", energy_gen)
+            print("energy_reg:", energy_reg)
 
         return (1-self.rho)*energy_gen + self.rho*energy_reg
 
@@ -228,7 +271,10 @@ class DBM(nn.Module):
         N = v.size(0)
         device = v.device
 
-        v_, y_, h_ = deepcopy((v, y, h))
+        v_ = v.clone().detach()
+        y_ = y.clone().detach()
+        h_ = [hi.clone().detach() for hi in h] if h is not None else [torch.empty(N, self.nh[i],
+                                                                   device=device) for i in range(self.L)]
 
         if rand_u is None:
             rand_u = torch.rand(N, device=device)
@@ -258,7 +304,7 @@ class DBM(nn.Module):
                                     self.weight[-1], self.bias[-1])
 
                     if T == 0:
-                        y_[even] = deepcopy(logits)
+                        y_[even] = logits.clone()
                     else:
                         logits /= T
 
@@ -271,17 +317,19 @@ class DBM(nn.Module):
                 logits = F.linear(h_[i-1][even],
                                   self.weight[i], self.bias[i+1])
                 if i+1 < len(h):
-                    logits += F.linear(h_[i+1][even],
-                                       self.weight[i+1].t(), None)
+                    logits.add_(F.linear(h_[i+1][even],
+                                       self.weight[i+1].t(), None))
                 if i+1 == len(h):
                     if (self.known_y):
-                        logits += F.linear(y[even]/self.y_sigma**2, self.weight[i+1].t(), None)
+                        logits.add_(F.linear(y[even]/self.y_sigma**2, self.weight[i+1].t(), None))
                     latent_logits[even] = logits
 
                 if T == 0:
                     if i+1 == len(h):
+                        indices = logits.argmax(dim=-1)
+                        # h_[i] = h_[i].clone()
                         h_[i][even] = torch.zeros_like(logits)
-                        h_[i][even][logits.argmax(dim=-1)] = self.nMult
+                        h_[i][even][torch.arange(logits.size(0)), indices] = self.nMult
                     else:
                         h_[i][even] = (logits >= 0).float()
                 else:
@@ -301,17 +349,19 @@ class DBM(nn.Module):
                 logits = F.linear(v_[even] if i==0 else h_[i-1][even],
                                   self.weight[i], self.bias[i+1])
                 if i+1 < len(h):
-                    logits += F.linear(h_[i+1][even],
-                                       self.weight[i+1].t(), None)
+                    logits.add_(F.linear(h_[i+1][even],
+                                       self.weight[i+1].t(), None))
                 if i+1 == len(h):
                     if (self.known_y):
-                        logits += F.linear(y[even]/self.y_sigma**2, self.weight[i+1].t(), None)
+                        logits.add_(F.linear(y[even]/self.y_sigma**2, self.weight[i+1].t(), None))
                     latent_logits[even] = logits
 
                 if T == 0:
                     if i+1 == len(h):
+                        indices = logits.argmax(dim=-1)
+                        # h_[i] = h_[i].clone()
                         h_[i][even] = torch.zeros_like(logits)
-                        h_[i][even][logits.argmax(dim=-1)] = self.nMult
+                        h_[i][even][torch.arange(logits.size(0)), indices] = self.nMult
                     else:
                         h_[i][even] = (logits >= 0).float()
                 else:
@@ -333,17 +383,19 @@ class DBM(nn.Module):
                 logits = F.linear(v_[odd] if i==0 else h_[i-1][odd],
                                   self.weight[i], self.bias[i+1])
                 if i+1 < len(h):
-                    logits += F.linear(h_[i+1][odd],
-                                       self.weight[i+1].t(), None)
+                    logits.add_(F.linear(h_[i+1][odd],
+                                       self.weight[i+1].t(), None))
                 if i+1 == len(h):
                     if (self.known_y):
-                        logits += F.linear(y[odd]/self.y_sigma**2, self.weight[i+1].t(), None)
+                        logits.add_(F.linear(y[odd]/self.y_sigma**2, self.weight[i+1].t(), None))
                     latent_logits[odd] = logits
 
                 if T == 0:
                     if i+1 == len(h):
+                        indices = logits.argmax(dim=-1)
+                        # h_[i] = h_[i].clone()
                         h_[i][odd] = torch.zeros_like(logits)
-                        h_[i][odd][logits.argmax(dim=-1)] = self.nMult
+                        h_[i][odd][torch.arange(logits.size(0)), indices] = self.nMult
                     else:
                         h_[i][odd] = (logits >= 0).float()
                 else:
@@ -379,7 +431,7 @@ class DBM(nn.Module):
                                     self.weight[-1], self.bias[-1])
 
                     if T == 0:
-                        y_[even] = deepcopy(logits)
+                        y_[even] = logits.clone()
                     else:
                         logits /= T
 
@@ -392,17 +444,19 @@ class DBM(nn.Module):
                 logits = F.linear(h_[i-1][odd],
                                   self.weight[i], self.bias[i+1])
                 if i+1 < len(h):
-                    logits += F.linear(h_[i+1][odd],
-                                       self.weight[i+1].t(), None)
+                    logits.add_(F.linear(h_[i+1][odd],
+                                       self.weight[i+1].t(), None))
                 if i+1 == len(h):
                     if (self.known_y):
-                        logits += F.linear(y[odd]/self.y_sigma**2, self.weight[i+1].t(), None)
+                        logits.add_(F.linear(y[odd]/self.y_sigma**2, self.weight[i+1].t(), None))
                     latent_logits[odd] = logits
 
                 if T == 0:
                     if i+1 == len(h):
+                        indices = logits.argmax(dim=-1)
+                        # h_[i] = h_[i].clone()
                         h_[i][odd] = torch.zeros_like(logits)
-                        h_[i][odd][logits.argmax(dim=-1)] = self.nMult
+                        h_[i][odd][torch.arange(logits.size(0)), indices] = self.nMult
                     else:
                         h_[i][odd] = (logits >= 0).float()
                 else:
@@ -423,6 +477,7 @@ class DBM(nn.Module):
     @torch.no_grad()
     def mh_step(self, v, y, h, fix_v=False, fix_y=False,
                 rand_v=None, rand_y=None, rand_h=None, rand_u=None):
+        # print("MH step called with fix_v =", fix_v, "fix_y =", fix_y)
         N = v.size(0)
         device = v.device
 
@@ -440,14 +495,22 @@ class DBM(nn.Module):
             if rand_y is None:
                 y_ = torch.randn_like(y)
             else:
-                raise NotImplementedError("rand_y used for continuous variables in mh_step --- DEBUG ---")
+                y_ = rand_y
 
         if rand_h is None:
             h_ = [torch.empty_like(h[i]).bernoulli_() for i in range(self.L)]
         else:
             h_ = [(rand_h[i] < 0.5).float() for i in range(self.L)]
-
+        # print("v = v_?", torch.all(v == v_).item())
+        # print("y = y_?", torch.all(y == y_).item())
+        # print("h = h_?", all(torch.all(h[i] == h_[i]).item() for i in range(self.L)))
         log_ratio = self.energy(v, y, h) - self.energy(v_, y_, h_)
+        # print("log_ratio is 0?", torch.all(log_ratio == 0).item())
+        # if ( torch.all(log_ratio == 0).item()):
+        #     print("y_", y_)
+        #     print("y", y)
+        #     print(self.energy(v, y, h, show=True))
+        #     print(self.energy(v_, y_, h_, show=True))
 
         if rand_u is None:
             accepted = log_ratio.exp().clamp(0, 1).bernoulli().bool()
