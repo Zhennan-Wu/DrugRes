@@ -7,12 +7,11 @@
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=zwu1@iu.edu
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=2
-#SBATCH --gpus-per-node=2
-#SBATCH --cpus-per-task=8
-#SBATCH --partition=gpu
+#SBATCH --ntasks-per-node=4
+#SBATCH --gpus-per-node=4
+#SBATCH --cpus-per-task=16
 #SBATCH --time=2-00:00:00
-#SBATCH --mem=64G
+#SBATCH --mem=128G
 #SBATCH -A r00939
 
 #Load any modules that your program needs
