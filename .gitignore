@@ -28,3 +28,4 @@ logs/
 # Ignore directories
 data/
 models/
+src/hpc_runs/
