@@ -1,19 +1,13 @@
-from copy import deepcopy
-
 import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.distributions import Bernoulli, Independent
 
-from utils import float2bit, bit2float
-
 
 class DBM(nn.Module):
-    def __init__(self, size, nc, nh=None, bits=8, L=2):
+    def __init__(self, nv, nh=None, ny=1, L=2, nMult=100, y_sigma=1., rho=0.1, known_y=True):
         super().__init__()
-        total_bit = nc * bits
 
-        nv = nc * bits * size**2
         if nh is None:
             nh = [nv] * L
         self.weight = nn.ParameterList([nn.Parameter(torch.Tensor(nh[0], nv))])
@@ -23,9 +17,6 @@ class DBM(nn.Module):
 
         self.nv = nv
         self.nh = nh
-        self.size = size
-        self.nc = nc
-        self.bits = bits
         self.L = L
 
         self.reset_parameters()
@@ -37,20 +28,17 @@ class DBM(nn.Module):
         for b in self.bias:
             nn.init.zeros_(b)
 
-    def forward(self, v):
+    def forward(self, v, y=None):
         N = v.size(0)
         device = v.device
 
         # Positive phase
-        v = float2bit(v, self.bits).flatten(1).float()
+        v = v.flatten(1).float()
 
         if self.L == 1:
-            if self.marginal:
-                energy_pos = self.marginal_energy(v, None, True)
-            else:
-                v, h, _ = self.gibbs_step(v, None, True,
+            v, h, _ = self.gibbs_step(v, None, True,
                                        torch.ones(N, device=device))
-                energy_pos = self.energy(v, h)
+            energy_pos = self.energy(v, h)
         else:
             h = []
             for i in range(self.L):
@@ -85,7 +73,8 @@ class DBM(nn.Module):
         device= v.device
 
         rand_u = torch.rand(N, device=device)
-        _v, _h = deepcopy((v, h))
+        _v = v.clone().detach()
+        _h = [h[i].clone().detach() for i in range(self.L)]
         v, h, _ = self.gibbs_step(v, h, fix_v, rand_u=rand_u, T=0)
 
         converged = torch.ones(N, dtype=torch.bool, device=device) if fix_v \
@@ -119,7 +108,8 @@ class DBM(nn.Module):
     def coupling(self, v, h, fix_v=False):
         N = v.size(0)
         device = v.device
-        _v, _h = deepcopy((v, h))
+        _v = v.clone().detach()
+        _h = [h[i].clone().detach() for i in range(self.L)]
 
         v, h = self.mh_step(v, h, fix_v)
         energy = self.energy(v, h)
@@ -128,7 +118,9 @@ class DBM(nn.Module):
                     else torch.all(v == _v, 1)
         for i in range(self.L):
             converged = converged.logical_and(torch.all(h[i] == _h[i], 1))
-
+        if not converged.all():
+            v = v.clone()
+            h = [hi.clone() for hi in h]
         while not converged.all():
             not_converged = converged.logical_not()
             _v = v[not_converged]
@@ -167,7 +159,7 @@ class DBM(nn.Module):
 
         return energy
 
-    def marginal_energy(self, v):
+    def marginal_energy(self, v, y=None):
         N = v.size(0)
         device = v.device
 
@@ -188,7 +180,8 @@ class DBM(nn.Module):
         N = v.size(0)
         device = v.device
 
-        v_, h_ = deepcopy((v, h))
+        v_ = v.clone().detach()
+        h_ = [h[i].clone().detach() for i in range(self.L)]
 
         if rand_u is None:
             rand_u = torch.rand(N, device=device)
@@ -348,16 +341,10 @@ class DBM(nn.Module):
         v_mode, h_mode = self.local_search(v, h)
         v_rand, h_rand, _ = self.gibbs_step(v_mode, h_mode)
 
-        v_mode = v_mode.unflatten(1, (self.nc, self.size, self.size, self.bits))
-        v_mode = bit2float(v_mode.bool(), self.bits)
-
-        v_rand = v_rand.unflatten(1, (self.nc, self.size, self.size, self.bits))
-        v_rand = bit2float(v_rand.bool(), self.bits)
-
         return v_mode, v_rand
     
     @torch.no_grad()
-    def encode(self, v):
+    def encode(self, v, y=None):
         N = v.size(0)
         device = v.device
 
@@ -384,29 +371,19 @@ class DBM(nn.Module):
         v_mode, h_mode, _ = self.gibbs_step(v, h, T=0)
         v_rand, h_rand, _ = self.gibbs_step(v, h)
 
-        v_mode = v_mode.unflatten(1, (self.nc, self.size, self.size))
-
-        v_rand = v_rand.unflatten(1, (self.nc, self.size, self.size))
-
         return v_mode, v_rand
     
     @torch.no_grad()
-    def reconstruct(self, v):
+    def reconstruct(self, v, y=None):
         N = v.size(0)
         device = v.device
 
-        v = float2bit(v, self.bits).flatten(1).float()
+        v = v.flatten(1).float()
         h = [torch.empty(N, self.nh[i],
                          device=device).bernoulli_() for i in range(self.L)]
 
         v, h = self.local_search(v, h, True)
         v_mode, h_mode, _ = self.gibbs_step(v, h, T=0)
         v_rand, h_rand, _ = self.gibbs_step(v, h)
-
-        v_mode = v_mode.unflatten(1, (self.nc, self.size, self.size, self.bits))
-        v_mode = bit2float(v_mode.bool(), self.bits)
-
-        v_rand = v_rand.unflatten(1, (self.nc, self.size, self.size, self.bits))
-        v_rand = bit2float(v_rand.bool(), self.bits)
 
         return v_mode, v_rand

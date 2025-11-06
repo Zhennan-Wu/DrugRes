@@ -23,7 +23,7 @@ from torchvision.transforms import ToTensor
 from torchvision.datasets import MNIST, FashionMNIST
 from torchvision.utils import make_grid, save_image
 
-from model_multinomial_supervised import DBM
+from model import DBM
 from utils import binarize, generate_id, visualize_curve
 
 
@@ -35,16 +35,15 @@ def train(rank, args, model, optimizer, scheduler,
     with torch.autograd.set_detect_anomaly(detect_anomaly):
         for step, (x, y) in enumerate(dataloader):
             v = x.to(next(model.parameters()).device)
-            r = y.to(next(model.parameters()).device).reshape(-1, args.ny)
 
             optimizer.zero_grad()
-            loss = model(v, r)
+            loss = model(v)
             loss.mean().backward()
             optimizer.step()
             scheduler.step()
 
             loss_per_batch.append(loss.detach().cpu().numpy())
-            energies_per_batch.append(model.module.marginal_energy(v, r).detach().cpu().numpy())
+            energies_per_batch.append(model.module.marginal_energy(v).detach().cpu().numpy())
 
         # if rank == 0:
         #     writer.add_image("ground_truth/train",
@@ -65,9 +64,8 @@ def valid(rank, args, model, dataloader, writer, epoch):
     if dataloader is not None:
         x, y = next(iter(dataloader))
         v = x.to(next(model.parameters()).device)
-        r = y.to(next(model.parameters()).device).reshape(-1, args.ny)
 
-        v_rec_mode, v_rec_rand = model.module.reconstruct(v, r)
+        v_rec_mode, v_rec_rand = model.module.reconstruct(v)
 
         # if rank == 0:
         #     writer.add_image("ground_truth/test",
@@ -92,24 +90,18 @@ def get_args():
     parser = argparse.ArgumentParser(description="Deep Boltzman Machine")
     parser.add_argument('--num_workers', type=int, help='number of data loading workers', default=8)
     parser.add_argument('--seed', type=int, help='random seed (default: 0)', default=0)
-    parser.add_argument("--dataset", type=str,
+    parser.add_argument("--dataset", type=str, choices=["MNIST", "FashionMNIST", "Mutations"],
                         default="Mutations", help='dataset to be used (default: Mutations)')
-    parser.add_argument("--nv", type=int, default=4801,
-                        help="number of visible units (default: 4801)")
+    parser.add_argument("--bits", type=int, default=1, choices=[1, 8],
+                        help="number of bits (default: 1)")
     parser.add_argument("--nh", type=int, nargs='+', default=[4900, 3600],
                         help="number of hidden units")
-    parser.add_argument("--ny", type=int, default=1,
-                        help="number of output units (default: 1)")
+    parser.add_argument("--size", type=int, default=1,
+                        help="image size (default: 1)")
     parser.add_argument("--L", type=int, default=2,
                         help="number of layers (default: 2)")
-    parser.add_argument("--nMulti", type=int, default=100,
-                        help="number of multinomial samples (default: 100)")
     parser.add_argument("--lr", type=float, default=5e-3,
                         help="learning rate (default: 5e-3)")
-    parser.add_argument("--y_sigma", type=float, default=1.,
-                        help="output std (default: 1.)")
-    parser.add_argument("--rho", type=float, default=0.1,
-                        help="weight of the regression energy (default: 0.1)")
     parser.add_argument("--momentum", type=float, default=0.9,
                         help="momentum (default: 0.9)")
     parser.add_argument("--gamma", type=float, default=1e-4,
@@ -168,11 +160,32 @@ def run(rank, args):
 
     # wp(f"Using devices {args.device_ids}")
     transform = [torchvision.transforms.ToTensor()]
+    if args.bits == 1:
+        transform.append(torchvision.transforms.Lambda(binarize))
     transform = torchvision.transforms.Compose(transform)
     # wp("Transforms ready")
 
     # Dataset
-    if args.dataset == "Mutations":
+    if args.dataset == "MNIST":
+        nc = 1
+        if not args.size == 28:
+            raise NotImplementedError
+        training_data = MNIST("dataset", download=True,
+                              transform=transform)
+        test_data = MNIST("dataset", train=False, download=True,
+                          transform=transform)
+    elif args.dataset == "FashionMNIST":
+        nc = 1
+        if not args.size == 28:
+            raise NotImplementedError
+        training_data = FashionMNIST("dataset", download=True,
+                                     transform=transform)
+        test_data = FashionMNIST("dataset", train=False, download=True,
+                                 transform=transform)
+    elif args.dataset == "Mutations":
+        nc = 4801
+        if not args.size == 1:
+            raise NotImplementedError
         # wp("Loading Mutations dataset")
         data = torch.load("cell_drug_response_samples.pt")
         dataset = torch.utils.data.TensorDataset(data['X'], data['y'])
@@ -184,7 +197,7 @@ def run(rank, args):
 
     num_workers = args.num_workers//args.world_size if args.distributed else args.num_workers
     kwargs = {'num_workers': num_workers, 'pin_memory': True, 'persistent_workers': True}
-    num_samples = 1000 * args.batch_size
+    num_samples = 10 * args.batch_size
     if args.distributed:
         num_samples //= args.world_size
     batch_size = args.batch_size//args.world_size if args.distributed else args.batch_size
@@ -206,7 +219,8 @@ def run(rank, args):
                                      sampler=test_sampler, **kwargs)
 
     # Model
-    model = DBM(args.nv, args.nh, args.ny, args.L, args.nMulti, args.y_sigma, args.rho).to(rank)
+    nh = args.nh
+    model = DBM(args.size, nc, nh, args.bits, args.L).to(rank)
 
     model = DDP(model, device_ids=[rank]) if args.distributed \
             else nn.DataParallel(model, device_ids=args.device_ids)
@@ -218,7 +232,7 @@ def run(rank, args):
 
     if args.log_dir is None:
         run_id = generate_id(8)
-        log_dir = f"./runs/supervised-{args.dataset}-L:{args.L}-ySigma:{args.y_sigma}-rho:{args.rho}-nMulti:{args.nMulti}-nh:{args.nh}-lr:{args.lr}-momentum:{args.momentum}-bs:{args.batch_size}-gamma:{args.gamma}-epoch:{args.epoch}-seed:{args.seed}-{run_id}"
+        log_dir = f"./runs/{args.dataset}-bits:{args.bits}-L:{args.L}-nh:{nh}-lr:{args.lr}-momentum:{args.momentum}-bs:{args.batch_size}-gamma:{args.gamma}-epoch:{args.epoch}-seed:{args.seed}-{run_id}"
     else:
         log_dir = args.log_dir
 
@@ -260,7 +274,7 @@ def run(rank, args):
 
 
 def load_model(log_dir, device, *args):
-    model = DBM(args.nv, args.nh, args.ny, args.L, args.nMult, args.y_sigma, args.rho).to(device)
+    model = DBM(args.size, args.nc, args.nh, args.bits, args.L).to(device)
     checkpoint_path = os.path.join(log_dir, args.model_path, f"model-{args.epoch}.pt")
     model.load_state_dict(torch.load(checkpoint_path, map_location=device))
     model.eval()

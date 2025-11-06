@@ -1,0 +1,58 @@
+name: jax_env
+channels:
+  - conda-forge
+  - nvidia
+  - defaults
+dependencies:
+  # Core Python
+  - python=3.11
+  - pip
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - seaborn
+  - tqdm
+  - scikit-learn
+  - numba
+  - numexpr
+  - pytz
+  - psutil
+  - pyyaml
+  - requests
+
+  # Visualization / Notebook (optional)
+  - ipykernel
+  - jupyter_core
+  - jupyter_client
+  - matplotlib-inline
+  - tensorboard
+  - protobuf
+
+  # PyTorch (CUDA 12.6)
+  - pytorch=2.9.0
+  - torchvision=0.24.0
+  - pytorch-cuda=12.6  # automatically pulls matching cuBLAS/cuDNN/NCCL versions from NVIDIA channel
+  - triton
+
+  # JAX / NumPyro / Equinox
+  - jax
+  - jaxlib
+  - numpyro
+  - optax
+  - equinox
+  - chex
+  - jaxtyping
+  - dm-tree
+  - ml_dtypes
+
+  # Utilities
+  - umap-learn
+  - joblib
+  - pubchempy
+  - rdkit
+
+  - pip:
+      - coderdata==2.2.1
+      - tensorboard-data-server
+      - werkzeug

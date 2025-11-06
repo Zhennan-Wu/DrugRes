@@ -1,19 +1,14 @@
-from copy import deepcopy
-
 import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.distributions import Bernoulli, Independent, Multinomial
 
-from utils import float2bit, bit2float
 
 
 class DBM(nn.Module):
-    def __init__(self, size, nc, nh=None, bits=8, L=2, nMult=100):
+    def __init__(self, nv, nh=None, ny=1, L=2, nMult=100, y_sigma=1., rho=0.1, known_y=True):
         super().__init__()
-        total_bit = nc * bits
 
-        nv = nc * bits * size**2
         if nh is None:
             nh = [nv] * L
         self.weight = nn.ParameterList([nn.Parameter(torch.Tensor(nh[0], nv))])
@@ -23,9 +18,6 @@ class DBM(nn.Module):
 
         self.nv = nv
         self.nh = nh
-        self.size = size
-        self.nc = nc
-        self.bits = bits
         self.L = L
         self.nMult = nMult
 
@@ -38,12 +30,12 @@ class DBM(nn.Module):
         for b in self.bias:
             nn.init.zeros_(b)
 
-    def forward(self, v):
+    def forward(self, v, y=None):
         N = v.size(0)
         device = v.device
 
         # Positive phase
-        v = float2bit(v, self.bits).flatten(1).float()
+        v = v.flatten(1).float()
 
         if self.L == 1:
             if self.marginal:
@@ -86,7 +78,8 @@ class DBM(nn.Module):
         device= v.device
 
         rand_u = torch.rand(N, device=device)
-        _v, _h = deepcopy((v, h))
+        _v = v.clone().detach()
+        _h = [h[i].clone().detach() for i in range(self.L)]
         v, h, _ = self.gibbs_step(v, h, fix_v, rand_u=rand_u, T=0)
 
         converged = torch.ones(N, dtype=torch.bool, device=device) if fix_v \
@@ -171,7 +164,7 @@ class DBM(nn.Module):
 
         return energy
 
-    def marginal_energy(self, v):
+    def marginal_energy(self, v, y=None):
         N = v.size(0)
         device = v.device
 
@@ -241,7 +234,7 @@ class DBM(nn.Module):
                     if rand_h is None:
                         if i+1 == len(h):
                             probs = torch.softmax(logits, dim=-1)
-                            samples = torch.distributions.Multinomial(total_count=self.nMult, probs=probs).sample()
+                            samples = Multinomial(total_count=self.nMult, probs=probs).sample()
                             h_[i][even] = samples
                         else:
                             h_[i][even] = Independent(Bernoulli(logits=logits), 1).sample()
@@ -271,7 +264,7 @@ class DBM(nn.Module):
                     if rand_h is None:
                         if i+1 == len(h):
                             probs = torch.softmax(logits, dim=-1)
-                            samples = torch.distributions.Multinomial(total_count=self.nMult, probs=probs).sample()
+                            samples = Multinomial(total_count=self.nMult, probs=probs).sample()
                             h_[i][even] = samples
                         else:
                             h_[i][even] = Independent(Bernoulli(logits=logits), 1).sample()
@@ -302,7 +295,7 @@ class DBM(nn.Module):
                     if rand_h is None:
                         if i+1 == len(h):
                             probs = torch.softmax(logits, dim=-1)
-                            samples = torch.distributions.Multinomial(total_count=self.nMult, probs=probs).sample()
+                            samples = Multinomial(total_count=self.nMult, probs=probs).sample()
                             h_[i][odd] = samples
                         else:
                             h_[i][odd] = Independent(Bernoulli(logits=logits), 1).sample()
@@ -346,7 +339,7 @@ class DBM(nn.Module):
                     if rand_h is None:
                         if i+1 == len(h):
                             probs = torch.softmax(logits, dim=-1)
-                            samples = torch.distributions.Multinomial(total_count=self.nMult, probs=probs).sample()
+                            samples = Multinomial(total_count=self.nMult, probs=probs).sample()
                             h_[i][odd] = samples
                         else:
                             h_[i][odd] = Independent(Bernoulli(logits=logits), 1).sample()
@@ -398,16 +391,10 @@ class DBM(nn.Module):
         v_mode, h_mode = self.local_search(v, h)
         v_rand, h_rand, _ = self.gibbs_step(v_mode, h_mode)
 
-        v_mode = v_mode.unflatten(1, (self.nc, self.size, self.size, self.bits))
-        v_mode = bit2float(v_mode.bool(), self.bits)
-
-        v_rand = v_rand.unflatten(1, (self.nc, self.size, self.size, self.bits))
-        v_rand = bit2float(v_rand.bool(), self.bits)
-
         return v_mode, v_rand
     
     @torch.no_grad()
-    def encode(self, v):
+    def encode(self, v, y=None):
         N = v.size(0)
         device = v.device
 
@@ -434,29 +421,19 @@ class DBM(nn.Module):
         v_mode, h_mode, _ = self.gibbs_step(v, h, T=0)
         v_rand, h_rand, _ = self.gibbs_step(v, h)
 
-        v_mode = v_mode.unflatten(1, (self.nc, self.size, self.size))
-
-        v_rand = v_rand.unflatten(1, (self.nc, self.size, self.size))
-
         return v_mode, v_rand
     
     @torch.no_grad()
-    def reconstruct(self, v):
+    def reconstruct(self, v, y=None):
         N = v.size(0)
         device = v.device
 
-        v = float2bit(v, self.bits).flatten(1).float()
+        v = v.flatten(1).float()
         h = [torch.empty(N, self.nh[i],
                          device=device).bernoulli_() for i in range(self.L)]
 
         v, h = self.local_search(v, h, True)
         v_mode, h_mode, _ = self.gibbs_step(v, h, T=0)
         v_rand, h_rand, _ = self.gibbs_step(v, h)
-
-        v_mode = v_mode.unflatten(1, (self.nc, self.size, self.size, self.bits))
-        v_mode = bit2float(v_mode.bool(), self.bits)
-
-        v_rand = v_rand.unflatten(1, (self.nc, self.size, self.size, self.bits))
-        v_rand = bit2float(v_rand.bool(), self.bits)
 
         return v_mode, v_rand

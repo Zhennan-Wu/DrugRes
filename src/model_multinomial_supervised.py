@@ -1,5 +1,3 @@
-from copy import deepcopy
-
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -202,19 +200,16 @@ class DBM(nn.Module):
                 else:
                     converged_ = torch.all(v_ == _v, 1)
                     v[not_converged] = v_
-                    # v.index_copy_(0, idx, v_)
 
                 if fix_y:
                     pass
                 else:
                     converged_ = converged_.logical_and(torch.all(y_ == _y, 1))
                     y[not_converged] = y_
-                    # y.index_copy_(0, idx, y_)
 
                 for i in range(self.L):
                     converged_ = converged_.logical_and(torch.all(h_[i] == _h[i], 1))
                     h[i][not_converged] = h_[i]
-                    # h[i].index_copy_(0, idx, h_[i])
 
                 converged[not_converged] = converged_
         if iteration == max_iter:

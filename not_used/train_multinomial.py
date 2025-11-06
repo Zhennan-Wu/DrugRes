@@ -23,7 +23,7 @@ from torchvision.transforms import ToTensor
 from torchvision.datasets import MNIST, FashionMNIST
 from torchvision.utils import make_grid, save_image
 
-from model import DBM
+from model_multinomial import DBM
 from utils import binarize, generate_id, visualize_curve
 
 
@@ -100,6 +100,8 @@ def get_args():
                         help="image size (default: 1)")
     parser.add_argument("--L", type=int, default=2,
                         help="number of layers (default: 2)")
+    parser.add_argument("--nMulti", type=int, default=100,
+                        help="number of multinomial samples (default: 100)")
     parser.add_argument("--lr", type=float, default=5e-3,
                         help="learning rate (default: 5e-3)")
     parser.add_argument("--momentum", type=float, default=0.9,
@@ -160,8 +162,6 @@ def run(rank, args):
 
     # wp(f"Using devices {args.device_ids}")
     transform = [torchvision.transforms.ToTensor()]
-    if args.bits == 1:
-        transform.append(torchvision.transforms.Lambda(binarize))
     transform = torchvision.transforms.Compose(transform)
     # wp("Transforms ready")
 
@@ -197,7 +197,7 @@ def run(rank, args):
 
     num_workers = args.num_workers//args.world_size if args.distributed else args.num_workers
     kwargs = {'num_workers': num_workers, 'pin_memory': True, 'persistent_workers': True}
-    num_samples = 1000 * args.batch_size
+    num_samples = 10 * args.batch_size
     if args.distributed:
         num_samples //= args.world_size
     batch_size = args.batch_size//args.world_size if args.distributed else args.batch_size
@@ -220,7 +220,7 @@ def run(rank, args):
 
     # Model
     nh = args.nh
-    model = DBM(args.size, nc, nh, args.bits, args.L).to(rank)
+    model = DBM(args.size, nc, nh, args.bits, args.L, args.nMulti).to(rank)
 
     model = DDP(model, device_ids=[rank]) if args.distributed \
             else nn.DataParallel(model, device_ids=args.device_ids)
@@ -232,7 +232,7 @@ def run(rank, args):
 
     if args.log_dir is None:
         run_id = generate_id(8)
-        log_dir = f"./runs/{args.dataset}-bits:{args.bits}-L:{args.L}-nh:{nh}-lr:{args.lr}-momentum:{args.momentum}-bs:{args.batch_size}-gamma:{args.gamma}-epoch:{args.epoch}-seed:{args.seed}-{run_id}"
+        log_dir = f"./runs/{args.dataset}-bits:{args.bits}-L:{args.L}-nMulti:{args.nMulti}-nh:{nh}-lr:{args.lr}-momentum:{args.momentum}-bs:{args.batch_size}-gamma:{args.gamma}-epoch:{args.epoch}-seed:{args.seed}-{run_id}"
     else:
         log_dir = args.log_dir
 

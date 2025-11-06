@@ -1,5 +1,3 @@
-from copy import deepcopy
-
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -15,7 +13,7 @@ def print_versions(h, tag):
 
 
 class DBM(nn.Module):
-    def __init__(self, nv, nh=None, ny=1, L=2, y_sigma=1., rho=0.1, known_y=True):
+    def __init__(self, nv, nh=None, ny=1, L=2, nMult=100, y_sigma=1., rho=0.1, known_y=True):
         super().__init__()
         if nh is None:
             nh = [nv] * L
