@@ -1,0 +1,193 @@
+[Gloo] Rank [Gloo] Rank 0 is connected to 11 is connected to  peer ranks. 1Expected number of connected peer ranks is :  peer ranks. 1Expected number of connected peer ranks is : 1
+
+[Gloo] Rank [Gloo] Rank 01 is connected to  is connected to 11 peer ranks.  peer ranks. Expected number of connected peer ranks is : Expected number of connected peer ranks is : 11
+
+g34:558246:558246 [0] NCCL INFO Bootstrap: Using ib0:10.10.108.10<0>
+g34:558244:558244 [0] NCCL INFO Bootstrap: Using ib0:10.10.108.10<0>
+g34:558246:558246 [0] NCCL INFO cudaDriverVersion 12060
+g34:558244:558244 [0] NCCL INFO cudaDriverVersion 12060
+g34:558246:558246 [0] NCCL INFO NCCL version 2.27.5+cuda12.9
+g34:558244:558244 [0] NCCL INFO NCCL version 2.27.5+cuda12.9
+g34:558247:558247 [1] NCCL INFO cudaDriverVersion 12060
+g34:558246:558246 [0] NCCL INFO Comm config Blocking set to 1
+g34:558244:558244 [0] NCCL INFO Comm config Blocking set to 1
+g34:558245:558245 [1] NCCL INFO cudaDriverVersion 12060
+g34:558247:558247 [1] NCCL INFO Bootstrap: Using ib0:10.10.108.10<0>
+g34:558247:558247 [1] NCCL INFO NCCL version 2.27.5+cuda12.9
+g34:558245:558245 [1] NCCL INFO Bootstrap: Using ib0:10.10.108.10<0>
+g34:558245:558245 [1] NCCL INFO NCCL version 2.27.5+cuda12.9
+g34:558247:558247 [1] NCCL INFO Comm config Blocking set to 1
+g34:558245:558245 [1] NCCL INFO Comm config Blocking set to 1
+g34:558246:558342 [0] NCCL INFO NET/Plugin: Could not find: libnccl-net.so. 
+g34:558245:558345 [1] NCCL INFO NET/Plugin: Could not find: libnccl-net.so. 
+g34:558244:558343 [0] NCCL INFO NET/Plugin: Could not find: libnccl-net.so. 
+g34:558247:558344 [1] NCCL INFO NET/Plugin: Could not find: libnccl-net.so. 
+g34:558246:558342 [0] NCCL INFO NET/IB : Using [0]irdma3:1/RoCE [1]mlx5_0:1/IB [RO]; OOB ib0:10.10.108.10<0>
+g34:558246:558342 [0] NCCL INFO Initialized NET plugin IB
+g34:558246:558342 [0] NCCL INFO Assigned NET plugin IB to comm
+g34:558246:558342 [0] NCCL INFO Using network IB
+g34:558244:558343 [0] NCCL INFO NET/IB : Using [0]irdma3:1/RoCE [1]mlx5_0:1/IB [RO]; OOB ib0:10.10.108.10<0>
+g34:558244:558343 [0] NCCL INFO Initialized NET plugin IB
+g34:558244:558343 [0] NCCL INFO Assigned NET plugin IB to comm
+g34:558244:558343 [0] NCCL INFO Using network IB
+g34:558247:558344 [1] NCCL INFO NET/IB : Using [0]irdma3:1/RoCE [1]mlx5_0:1/IB [RO]; OOB ib0:10.10.108.10<0>
+g34:558247:558344 [1] NCCL INFO Initialized NET plugin IB
+g34:558247:558344 [1] NCCL INFO Assigned NET plugin IB to comm
+g34:558247:558344 [1] NCCL INFO Using network IB
+g34:558245:558345 [1] NCCL INFO NET/IB : Using [0]irdma3:1/RoCE [1]mlx5_0:1/IB [RO]; OOB ib0:10.10.108.10<0>
+g34:558245:558345 [1] NCCL INFO Initialized NET plugin IB
+g34:558245:558345 [1] NCCL INFO Assigned NET plugin IB to comm
+g34:558245:558345 [1] NCCL INFO Using network IB
+g34:558246:558342 [0] NCCL INFO DMA-BUF is available on GPU device 0
+g34:558246:558342 [0] NCCL INFO ncclCommInitRankConfig comm 0x563470225b00 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId cb000 commId 0x82f76ecfba83cc01 - Init START
+g34:558244:558343 [0] NCCL INFO DMA-BUF is available on GPU device 0
+g34:558244:558343 [0] NCCL INFO ncclCommInitRankConfig comm 0x559f27eb96f0 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId cb000 commId 0xfa9844378483f48e - Init START
+g34:558247:558344 [1] NCCL INFO DMA-BUF is available on GPU device 1
+g34:558247:558344 [1] NCCL INFO ncclCommInitRankConfig comm 0x55beba8e9690 rank 1 nranks 2 cudaDev 1 nvmlDev 1 busId db000 commId 0x82f76ecfba83cc01 - Init START
+g34:558247:558344 [1] NCCL INFO RAS client listening socket at ::1<28028>
+g34:558246:558342 [0] NCCL INFO RAS client listening socket at ::1<28028>
+g34:558246:558342 [0] NCCL INFO Bootstrap timings total 0.082195 (create 0.000025, send 0.000073, recv 0.081799, ring 0.000015, delay 0.000002)
+g34:558247:558344 [1] NCCL INFO Bootstrap timings total 0.001892 (create 0.000021, send 0.000057, recv 0.000114, ring 0.000030, delay 0.000001)
+g34:558245:558345 [1] NCCL INFO DMA-BUF is available on GPU device 1
+g34:558245:558345 [1] NCCL INFO ncclCommInitRankConfig comm 0x55878bef4ec0 rank 1 nranks 2 cudaDev 1 nvmlDev 1 busId db000 commId 0xfa9844378483f48e - Init START
+g34:558244:558343 [0] NCCL INFO RAS client listening socket at ::1<28028>
+g34:558245:558345 [1] NCCL INFO RAS client listening socket at ::1<28028>
+g34:558245:558345 [1] NCCL INFO Bootstrap timings total 0.000563 (create 0.000038, send 0.000071, recv 0.000092, ring 0.000013, delay 0.000002)
+g34:558244:558343 [0] NCCL INFO Bootstrap timings total 0.035656 (create 0.000035, send 0.000094, recv 0.035113, ring 0.000046, delay 0.000001)
+g34:558246:558342 [0] NCCL INFO comm 0x563470225b00 rank 0 nRanks 2 nNodes 1 localRanks 2 localRank 0 MNNVL 0
+g34:558247:558344 [1] NCCL INFO comm 0x55beba8e9690 rank 1 nRanks 2 nNodes 1 localRanks 2 localRank 1 MNNVL 0
+g34:558247:558344 [1] NCCL INFO Trees [0] -1/-1/-1->1->0 [1] -1/-1/-1->1->0 [2] 0/-1/-1->1->-1 [3] 0/-1/-1->1->-1 [4] -1/-1/-1->1->0 [5] -1/-1/-1->1->0 [6] 0/-1/-1->1->-1 [7] 0/-1/-1->1->-1
+g34:558247:558344 [1] NCCL INFO P2P Chunksize set to 524288
+g34:558246:558342 [0] NCCL INFO Channel 00/08 : 0 1
+g34:558246:558342 [0] NCCL INFO Channel 01/08 : 0 1
+g34:558246:558342 [0] NCCL INFO Channel 02/08 : 0 1
+g34:558246:558342 [0] NCCL INFO Channel 03/08 : 0 1
+g34:558246:558342 [0] NCCL INFO Channel 04/08 : 0 1
+g34:558246:558342 [0] NCCL INFO Channel 05/08 : 0 1
+g34:558246:558342 [0] NCCL INFO Channel 06/08 : 0 1
+g34:558246:558342 [0] NCCL INFO Channel 07/08 : 0 1
+g34:558246:558342 [0] NCCL INFO Trees [0] 1/-1/-1->0->-1 [1] 1/-1/-1->0->-1 [2] -1/-1/-1->0->1 [3] -1/-1/-1->0->1 [4] 1/-1/-1->0->-1 [5] 1/-1/-1->0->-1 [6] -1/-1/-1->0->1 [7] -1/-1/-1->0->1
+g34:558246:558342 [0] NCCL INFO P2P Chunksize set to 524288
+g34:558244:558343 [0] NCCL INFO Setting affinity for GPU 0 to 1,13,29,37,41,61,77,93
+g34:558245:558345 [1] NCCL INFO Setting affinity for GPU 1 to 1,13,29,37,41,61,77,93
+g34:558245:558345 [1] NCCL INFO comm 0x55878bef4ec0 rank 1 nRanks 2 nNodes 1 localRanks 2 localRank 1 MNNVL 0
+g34:558244:558343 [0] NCCL INFO comm 0x559f27eb96f0 rank 0 nRanks 2 nNodes 1 localRanks 2 localRank 0 MNNVL 0
+g34:558244:558343 [0] NCCL INFO Channel 00/08 : 0 1
+g34:558245:558345 [1] NCCL INFO Trees [0] -1/-1/-1->1->0 [1] -1/-1/-1->1->0 [2] 0/-1/-1->1->-1 [3] 0/-1/-1->1->-1 [4] -1/-1/-1->1->0 [5] -1/-1/-1->1->0 [6] 0/-1/-1->1->-1 [7] 0/-1/-1->1->-1
+g34:558244:558343 [0] NCCL INFO Channel 01/08 : 0 1
+g34:558244:558343 [0] NCCL INFO Channel 02/08 : 0 1
+g34:558245:558345 [1] NCCL INFO P2P Chunksize set to 524288
+g34:558244:558343 [0] NCCL INFO Channel 03/08 : 0 1
+g34:558244:558343 [0] NCCL INFO Channel 04/08 : 0 1
+g34:558244:558343 [0] NCCL INFO Channel 05/08 : 0 1
+g34:558244:558343 [0] NCCL INFO Channel 06/08 : 0 1
+g34:558244:558343 [0] NCCL INFO Channel 07/08 : 0 1
+g34:558244:558343 [0] NCCL INFO Trees [0] 1/-1/-1->0->-1 [1] 1/-1/-1->0->-1 [2] -1/-1/-1->0->1 [3] -1/-1/-1->0->1 [4] 1/-1/-1->0->-1 [5] 1/-1/-1->0->-1 [6] -1/-1/-1->0->1 [7] -1/-1/-1->0->1
+g34:558244:558343 [0] NCCL INFO P2P Chunksize set to 524288
+g34:558246:558342 [0] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so. 
+g34:558247:558344 [1] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so. 
+g34:558246:558342 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0
+g34:558245:558345 [1] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so. 
+g34:558246:558359 [0] NCCL INFO [Proxy Service] Device 0 CPU core 12
+g34:558246:558361 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 76
+g34:558245:558362 [1] NCCL INFO [Proxy Service] Device 1 CPU core 37
+g34:558245:558363 [1] NCCL INFO [Proxy Service UDS] Device 1 CPU core 93
+g34:558247:558358 [1] NCCL INFO [Proxy Service] Device 1 CPU core 92
+g34:558247:558360 [1] NCCL INFO [Proxy Service UDS] Device 1 CPU core 36
+g34:558244:558343 [0] NCCL INFO PROFILER/Plugin: Could not find: libnccl-profiler.so. 
+g34:558244:558343 [0] NCCL INFO Check P2P Type isAllDirectP2p 1 directMode 0
+g34:558244:558365 [0] NCCL INFO [Proxy Service UDS] Device 0 CPU core 29
+g34:558244:558364 [0] NCCL INFO [Proxy Service] Device 0 CPU core 1
+g34:558246:558342 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+g34:558246:558342 [0] NCCL INFO 8 coll channels, 8 collnet channels, 0 nvls channels, 8 p2p channels, 8 p2p channels per peer
+g34:558246:558342 [0] NCCL INFO CC Off, workFifoBytes 1048576
+g34:558244:558343 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+g34:558245:558345 [1] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+g34:558244:558343 [0] NCCL INFO 8 coll channels, 8 collnet channels, 0 nvls channels, 8 p2p channels, 8 p2p channels per peer
+g34:558245:558345 [1] NCCL INFO 8 coll channels, 8 collnet channels, 0 nvls channels, 8 p2p channels, 8 p2p channels per peer
+g34:558247:558344 [1] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+g34:558247:558344 [1] NCCL INFO 8 coll channels, 8 collnet channels, 0 nvls channels, 8 p2p channels, 8 p2p channels per peer
+g34:558244:558343 [0] NCCL INFO CC Off, workFifoBytes 1048576
+g34:558246:558342 [0] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so. Using internal tuner plugin.
+g34:558246:558342 [0] NCCL INFO ncclCommInitRankConfig comm 0x563470225b00 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId cb000 commId 0x82f76ecfba83cc01 - Init COMPLETE
+g34:558246:558342 [0] NCCL INFO Init timings - ncclCommInitRankConfig: rank 0 nranks 2 total 1.16 (kernels 0.57, alloc 0.31, bootstrap 0.08, allgathers 0.03, topo 0.14, graphs 0.00, connections 0.01, rest 0.02)
+g34:558247:558344 [1] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so. Using internal tuner plugin.
+g34:558247:558344 [1] NCCL INFO ncclCommInitRankConfig comm 0x55beba8e9690 rank 1 nranks 2 cudaDev 1 nvmlDev 1 busId db000 commId 0x82f76ecfba83cc01 - Init COMPLETE
+g34:558245:558345 [1] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so. Using internal tuner plugin.
+g34:558245:558345 [1] NCCL INFO ncclCommInitRankConfig comm 0x55878bef4ec0 rank 1 nranks 2 cudaDev 1 nvmlDev 1 busId db000 commId 0xfa9844378483f48e - Init COMPLETE
+g34:558245:558345 [1] NCCL INFO Init timings - ncclCommInitRankConfig: rank 1 nranks 2 total 1.16 (kernels 0.57, alloc 0.42, bootstrap 0.00, allgathers 0.00, topo 0.15, graphs 0.00, connections 0.01, rest 0.02)
+g34:558247:558344 [1] NCCL INFO Init timings - ncclCommInitRankConfig: rank 1 nranks 2 total 1.16 (kernels 0.57, alloc 0.39, bootstrap 0.00, allgathers 0.03, topo 0.14, graphs 0.00, connections 0.01, rest 0.02)
+g34:558244:558343 [0] NCCL INFO TUNER/Plugin: Could not find: libnccl-tuner.so. Using internal tuner plugin.
+g34:558244:558343 [0] NCCL INFO ncclCommInitRankConfig comm 0x559f27eb96f0 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId cb000 commId 0xfa9844378483f48e - Init COMPLETE
+g34:558244:558343 [0] NCCL INFO Init timings - ncclCommInitRankConfig: rank 0 nranks 2 total 1.16 (kernels 0.57, alloc 0.38, bootstrap 0.04, allgathers 0.00, topo 0.15, graphs 0.00, connections 0.01, rest 0.02)
+g34:558247:558369 [1] NCCL INFO Channel 00/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558246:558367 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558245:558368 [1] NCCL INFO Channel 00/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558244:558366 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558247:558369 [1] NCCL INFO Channel 01/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558246:558367 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558245:558368 [1] NCCL INFO Channel 01/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558244:558366 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558247:558369 [1] NCCL INFO Channel 02/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558246:558367 [0] NCCL INFO Channel 02/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558245:558368 [1] NCCL INFO Channel 02/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558244:558366 [0] NCCL INFO Channel 02/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558247:558369 [1] NCCL INFO Channel 03/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558246:558367 [0] NCCL INFO Channel 03/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558245:558368 [1] NCCL INFO Channel 03/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558244:558366 [0] NCCL INFO Channel 03/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558247:558369 [1] NCCL INFO Channel 04/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558246:558367 [0] NCCL INFO Channel 04/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558245:558368 [1] NCCL INFO Channel 04/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558244:558366 [0] NCCL INFO Channel 04/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558247:558369 [1] NCCL INFO Channel 05/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558246:558367 [0] NCCL INFO Channel 05/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558245:558368 [1] NCCL INFO Channel 05/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558244:558366 [0] NCCL INFO Channel 05/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558247:558369 [1] NCCL INFO Channel 06/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558246:558367 [0] NCCL INFO Channel 06/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558245:558368 [1] NCCL INFO Channel 06/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558244:558366 [0] NCCL INFO Channel 06/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558247:558369 [1] NCCL INFO Channel 07/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558246:558367 [0] NCCL INFO Channel 07/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558245:558368 [1] NCCL INFO Channel 07/0 : 1[1] -> 0[0] via P2P/CUMEM
+g34:558244:558366 [0] NCCL INFO Channel 07/0 : 0[0] -> 1[1] via P2P/CUMEM
+g34:558246:558367 [0] NCCL INFO Connected all rings, use ring PXN 0 GDR 1
+g34:558247:558369 [1] NCCL INFO Connected all rings, use ring PXN 0 GDR 1
+g34:558245:558368 [1] NCCL INFO Connected all rings, use ring PXN 0 GDR 1
+g34:558244:558366 [0] NCCL INFO Connected all rings, use ring PXN 0 GDR 1
+g34:558245:572392 [1] NCCL INFO misc/socket.cc:64 -> 3
+g34:558245:572392 [1] NCCL INFO misc/socket.cc:81 -> 3
+g34:558245:572392 [1] NCCL INFO misc/socket.cc:863 -> 3
+g34:558244:558364 [0] NCCL INFO misc/socket.cc:915 -> 3
+g34:558245:572392 [1] NCCL INFO misc/socket.cc:64 -> 3
+g34:558245:572392 [1] NCCL INFO misc/socket.cc:81 -> 3
+g34:558245:572392 [1] NCCL INFO misc/socket.cc:863 -> 3
+g34:558245:558362 [1] NCCL INFO misc/socket.cc:915 -> 3
+g34:558244:572393 [0] NCCL INFO misc/socket.cc:64 -> 3
+g34:558244:572393 [0] NCCL INFO misc/socket.cc:81 -> 3
+g34:558244:572393 [0] NCCL INFO misc/socket.cc:863 -> 3
+g34:558244:558364 [0] NCCL INFO misc/socket.cc:915 -> 3
+g34:558244:572393 [0] NCCL INFO misc/socket.cc:64 -> 3
+g34:558244:572393 [0] NCCL INFO misc/socket.cc:81 -> 3
+g34:558244:572393 [0] NCCL INFO misc/socket.cc:863 -> 3
+g34:558245:558362 [1] NCCL INFO misc/socket.cc:915 -> 3
+g34:558245:572392 [1] NCCL INFO comm 0x55878bef4ec0 rank 1 nranks 2 cudaDev 1 busId db000 - Abort COMPLETE
+g34:558244:572393 [0] NCCL INFO comm 0x559f27eb96f0 rank 0 nranks 2 cudaDev 0 busId cb000 - Abort COMPLETE
+g34:558246:572399 [0] NCCL INFO misc/socket.cc:64 -> 3
+g34:558246:572399 [0] NCCL INFO misc/socket.cc:81 -> 3
+g34:558246:572399 [0] NCCL INFO misc/socket.cc:863 -> 3
+g34:558246:558359 [0] NCCL INFO misc/socket.cc:915 -> 3
+g34:558246:572399 [0] NCCL INFO misc/socket.cc:64 -> 3
+g34:558246:572399 [0] NCCL INFO misc/socket.cc:81 -> 3
+g34:558246:572399 [0] NCCL INFO misc/socket.cc:863 -> 3
+g34:558246:558359 [0] NCCL INFO misc/socket.cc:915 -> 3
+g34:558247:572401 [1] NCCL INFO misc/socket.cc:64 -> 3
+g34:558247:572401 [1] NCCL INFO misc/socket.cc:81 -> 3
+g34:558247:572401 [1] NCCL INFO misc/socket.cc:863 -> 3
+g34:558247:572401 [1] NCCL INFO misc/socket.cc:64 -> 3
+g34:558247:572401 [1] NCCL INFO misc/socket.cc:81 -> 3
+g34:558247:572401 [1] NCCL INFO misc/socket.cc:863 -> 3
+g34:558247:558358 [1] NCCL INFO misc/socket.cc:915 -> 3
+g34:558246:572399 [0] NCCL INFO comm 0x563470225b00 rank 0 nranks 2 cudaDev 0 busId cb000 - Abort COMPLETE
+g34:558247:572401 [1] NCCL INFO comm 0x55beba8e9690 rank 1 nranks 2 cudaDev 1 busId db000 - Abort COMPLETE

@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH -J dbm
-#SBATCH -o ../outputs/dbm_output_%j.txt
-#SBATCH -e ../outputs/dbm_error_%j.err
+#SBATCH -J super_dbm
+#SBATCH -o ../outputs/dbm_super_output_%j.txt
+#SBATCH -e ../outputs/dbm_super_error_%j.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=zwu1@iu.edu
 #SBATCH -p hopper
@@ -37,6 +37,6 @@ srun torchrun \
   train_hpc.py \
     --distributed \
     --model_type bernoulli \
-    --learning_type unsupervised \
+    --learning_type supervised \
     --data_path /N/slate/zwu1/CancerDrugCell/cell_drug_response_samples.pt
 

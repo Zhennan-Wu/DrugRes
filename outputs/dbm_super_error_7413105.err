@@ -1,0 +1,6 @@
+conda version 24.1.2 python 3.11.7 unloaded.
+conda version 24.1.2 python 3.11.7 loaded.
+/N/u/zwu1/Quartz/.conda/envs/jax_env/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py:4876: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  warnings.warn(  # warn only once
+/N/u/zwu1/Quartz/.conda/envs/jax_env/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py:4876: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  warnings.warn(  # warn only once
