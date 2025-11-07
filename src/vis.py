@@ -5,6 +5,7 @@ import umap
 import os
 import jax.numpy as jnp
 import jax
+import torch
 
 
 def tsne_visualization(data, struct_upbd, file_prefix):
@@ -151,6 +152,10 @@ def umap_visualization(data, struct_upbd, file_prefix):
 
 
 def likelihood_visualization(likelihood_mean, likelihood_std, epoch=0, log_dir="./"):
+    if isinstance(likelihood_mean, torch.Tensor):
+        likelihood_mean = likelihood_mean.detach().cpu().numpy()
+    if isinstance(likelihood_std, torch.Tensor):
+        likelihood_std = likelihood_std.detach().cpu().numpy()
     iterations = np.arange(1, len(likelihood_mean) + 1)
     # --- Plot setup ---
     fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
