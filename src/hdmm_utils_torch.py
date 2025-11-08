@@ -1,6 +1,11 @@
 import torch
 
 
+def safe_positive(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    x_safe = torch.where(x > 0, x, torch.full_like(x, eps))
+    return x_safe
+
+
 def stats_by_label(data: torch.Tensor, labels: torch.Tensor, num_classes: int, eps: float = 1e-8):
     """
     Compute mean, variance, sum of variance, and count for each label.
@@ -116,90 +121,100 @@ def suffix_sum(x: torch.Tensor) -> torch.Tensor:
     suffix = torch.flip(rev_cumsum, dims=[-1])
     # Subtract original to exclude the current element
     suffix = suffix - x
-    # Clip to ensure non-negativity and avoid underflow
-    suffix = torch.clamp(suffix, min=1e-10)
     return suffix
 
 
-def safe_update_scatter(tensor: torch.Tensor,
-                        indices: torch.LongTensor,
-                        values: torch.Tensor) -> torch.Tensor:
+def safe_update_scatter(x: torch.Tensor, indices: torch.Tensor, weights: torch.Tensor, dim: int):
     """
-    Vectorized autograd-safe update along the last dimension using torch.scatter.
-
-    tensor: (..., k)
-    indices: (num_updates, tensor.ndim - 1)
-              Each row gives the coordinates (e.g. (a, b)).
-    values:  (num_updates, k)
-              Replacement rows.
+    Autograd-safe overwrite update of `x` at `indices` with `weights`.
+    Supports both single and batched updates on arbitrary dimension.
     """
-    out = tensor.clone()
-    *prefix_shape, k = out.shape
-    n_prefix = int(torch.prod(torch.tensor(prefix_shape, device=tensor.device)))
+    dim = dim % x.ndim
 
-    flat = out.view(n_prefix, k)
+    # Normalize shapes
+    if indices.ndim == 1:
+        indices = indices.unsqueeze(0)
+        weights = weights.unsqueeze(0)
+    B = indices.shape[0]
+    assert indices.shape[1] == x.ndim - 1
+    assert weights.shape == (B, x.shape[dim])
 
-    # Compute strides for flattening all but last dimension
-    strides = []
-    for i in range(len(prefix_shape)):
-        if i + 1 < len(prefix_shape):
-            stride = int(torch.prod(torch.tensor(prefix_shape[i+1:], device=tensor.device)))
-        else:
-            stride = 1
-        strides.append(stride)
-    strides = torch.tensor(strides, device=tensor.device, dtype=torch.long)
+    # Check duplicates
+    if torch.unique(indices, dim=0).shape[0] != B:
+        raise ValueError("Duplicate index rows found; updates must be distinct.")
 
-    # Compute flattened indices
-    flat_idx = (indices.long() * strides).sum(dim=1)
+    # Move target dim to last for uniform scatter shape
+    x_t = x.movedim(dim, -1).clone()  # (N0,…,N_{d-1},N_{d+1},…,N_{n-1}, Ndim)
+    shape_except = x_t.shape[:-1]
+    D = x_t.shape[-1]
+    flat_x = x_t.reshape(-1, D)
 
-    # Expand flat indices to match (num_updates, k)
-    scatter_index = flat_idx.unsqueeze(1).expand(-1, k)
+    # Compute flat positions for the provided index rows
+    strides = torch.tensor(
+        [int(torch.prod(torch.tensor(shape_except[i + 1:]))) if i < len(shape_except) - 1 else 1
+         for i in range(len(shape_except))],
+        device=indices.device,
+        dtype=torch.long,
+    )
+    flat_pos = (indices * strides).sum(dim=1)  # (B,)
 
-    # Scatter new values into the flattened view
-    flat = flat.scatter(0, scatter_index, values)
+    # Create new flat tensor with updated rows
+    update_flat = torch.zeros_like(flat_x)
+    update_flat.index_copy_(0, flat_pos, weights)
 
-    return flat.view(out.shape)
+    # Merge: overwrite the selected rows, keep others
+    mask = torch.zeros(flat_x.size(0), dtype=torch.bool, device=flat_x.device)
+    mask[flat_pos] = True
+    flat_x = torch.where(mask.unsqueeze(1), update_flat, flat_x)
+
+    # Reshape back and move dimension to original position
+    x_new = flat_x.view(*shape_except, D).movedim(-1, dim)
+    return x_new
 
 
-def advanced_multi_index_select(a: torch.Tensor, b: torch.Tensor, dims: torch.Tensor):
+def advanced_multi_index_select(a: torch.Tensor, b: torch.Tensor, dims):
     """
-    Generalized multi-dimensional indexing.
+    Generalized multi-dimensional indexing (autograd-safe).
 
     Args:
-        a: tensor of shape (D0, D1, ..., Dp)
+        a: Tensor of shape (D0, D1, ..., Dp)
         b: LongTensor of shape (N, n)
-           where each row gives indices along the dimensions specified in `dims`
-        dims: 1D LongTensor or list of ints of length n
-           specifying which dimensions of `a` are being indexed.
+           Each row gives indices along the dimensions specified in `dims`
+        dims: 1D LongTensor, list, or tuple of length n
+           Which dimensions of `a` are being indexed.
 
     Returns:
         Tensor of shape (N, remaining_dims_of_a)
-        where dimensions not in `dims` are kept.
     """
-    assert b.shape[1] == len(dims), "b.shape[1] must match len(dims)"
+    assert b.ndim == 2, "b must be 2D"
+    assert b.shape[1] == len(dims), f"b.shape[1] ({b.shape[1]}) must match len(dims) ({len(dims)})"
 
-    dims = torch.as_tensor(dims, dtype=torch.long, device=b.device)
+    # ensure dims is a list of ints
+    dims = [int(d) for d in dims]
     N, n = b.shape
     total_dims = a.ndim
 
-    # 1️⃣ Move indexed dims to the front so we can flatten them easily
-    permute_order = torch.cat([dims, torch.tensor([d for d in range(total_dims) if d not in dims], device=b.device)])
-    a_perm = a.permute(*permute_order)
-    
+    # 1️⃣ Move indexed dims to the front
+    permute_order = dims + [d for d in range(total_dims) if d not in dims]
+    a_perm = a.permute(*permute_order)  # convert list -> unpack to ints
+
     prefix_shape = [a.shape[d] for d in dims]
     suffix_shape = [a.shape[d] for d in range(total_dims) if d not in dims]
     flat_a = a_perm.reshape(int(torch.prod(torch.tensor(prefix_shape))), *suffix_shape)
 
     # 2️⃣ Compute flat indices corresponding to b[:, dims]
     strides = torch.tensor(
-        [int(torch.prod(torch.tensor(prefix_shape[i+1:]))) for i in range(n)],
-        device=b.device
+        [int(torch.prod(torch.tensor(prefix_shape[i+1:]))) if i < n-1 else 1
+         for i in range(n)],
+        device=b.device,
+        dtype=torch.long
     )
     flat_idx = (b * strides).sum(dim=1)
 
     # 3️⃣ Gather the indexed rows
     result = flat_a[flat_idx]
     return result
+
 
 
 
