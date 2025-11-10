@@ -155,14 +155,16 @@ class DBM(nn.Module):
 
     def energy(self, v, h):
         energy = - torch.sum(v * self.bias[0].unsqueeze(0), 1)
-
         for i in range(self.L):
-            logits = F.linear(v if i==0 else h[i-1],
-                              self.weight[i], self.bias[i+1])
-
+            logits = F.linear(v if i == 0 else h[i-1], self.weight[i], self.bias[i+1])
             energy = energy - torch.sum(h[i] * logits, 1)
 
+        # ADD combinatorial term for top multinomial layer:
+        top = h[-1]
+        # + Σ log(h_k!)  (drop log M! constant)
+        energy = energy + torch.lgamma(top + 1.0).sum(dim=1)
         return energy
+
 
     def marginal_energy(self, v, y=None):
         N = v.size(0)
@@ -215,7 +217,7 @@ class DBM(nn.Module):
                 logits = F.linear(h_[i-1][even],
                                   self.weight[i], self.bias[i+1])
                 if i+1 < len(h):
-                    logits += F.linear(h_[i+1][even],
+                    logits += F.linear(h_[i+1][even] if i+1 < len(h)-1 else h_[i+1][even]/self.nMult,
                                        self.weight[i+1].t(), None)
                 if i+1 == len(h):
                     latent_logits[even] = logits
@@ -239,13 +241,22 @@ class DBM(nn.Module):
                         else:
                             h_[i][even] = Independent(Bernoulli(logits=logits), 1).sample()
                     else:
-                        h_[i][even] = (rand_h[i][even] < logits.sigmoid()).float()
+                        if i+1 == len(h):
+                            probs = torch.softmax(logits, dim=-1)
+                            cumsum_probs = torch.cumsum(probs, dim=-1)
+                            rand_vals = rand_h[i][even]
+                            samples = torch.zeros_like(logits)
+                            for j in range(self.nMult):
+                                samples += (rand_vals < cumsum_probs).float()
+                            h_[i][even] = samples
+                        else:
+                            h_[i][even] = (rand_h[i][even] < logits.sigmoid()).float()
 
             for i in range(0, len(h), 2):
                 logits = F.linear(v_[even] if i==0 else h_[i-1][even],
                                   self.weight[i], self.bias[i+1])
                 if i+1 < len(h):
-                    logits += F.linear(h_[i+1][even],
+                    logits += F.linear(h_[i+1][even] if i+1 < len(h)-1 else h_[i+1][even]/self.nMult,
                                        self.weight[i+1].t(), None)
                 if i+1 == len(h):
                     latent_logits[even] = logits
@@ -269,14 +280,23 @@ class DBM(nn.Module):
                         else:
                             h_[i][even] = Independent(Bernoulli(logits=logits), 1).sample()
                     else:
-                        h_[i][even] = (rand_h[i][even] < logits.sigmoid()).float()
+                        if i+1 == len(h):
+                            probs = torch.softmax(logits, dim=-1)
+                            cumsum_probs = torch.cumsum(probs, dim=-1)
+                            rand_vals = rand_h[i][even]
+                            samples = torch.zeros_like(logits)
+                            for j in range(self.nMult):
+                                samples += (rand_vals < cumsum_probs).float()
+                            h_[i][even] = samples
+                        else:
+                            h_[i][even] = (rand_h[i][even] < logits.sigmoid()).float()
 
         if odd.sum() > 0:
             for i in range(0, len(h), 2):
                 logits = F.linear(v_[odd] if i==0 else h_[i-1][odd],
                                   self.weight[i], self.bias[i+1])
                 if i+1 < len(h):
-                    logits += F.linear(h_[i+1][odd],
+                    logits += F.linear(h_[i+1][odd] if i+1 < len(h)-1 else h_[i+1][odd]/self.nMult,
                                        self.weight[i+1].t(), None)
                 if i+1 == len(h):
                     latent_logits[odd] = logits
@@ -300,7 +320,16 @@ class DBM(nn.Module):
                         else:
                             h_[i][odd] = Independent(Bernoulli(logits=logits), 1).sample()
                     else:
-                        h_[i][odd] = (rand_h[i][odd] < logits.sigmoid()).float()
+                        if i+1 == len(h):
+                            probs = torch.softmax(logits, dim=-1)
+                            cumsum_probs = torch.cumsum(probs, dim=-1)
+                            rand_vals = rand_h[i][odd]
+                            samples = torch.zeros_like(logits)
+                            for j in range(self.nMult):
+                                samples += (rand_vals < cumsum_probs).float()
+                            h_[i][odd] = samples
+                        else:
+                            h_[i][odd] = (rand_h[i][odd] < logits.sigmoid()).float()
 
             if not fix_v:
                 logits = F.linear(h_[0][odd],
@@ -320,7 +349,7 @@ class DBM(nn.Module):
                 logits = F.linear(h_[i-1][odd],
                                   self.weight[i], self.bias[i+1])
                 if i+1 < len(h):
-                    logits += F.linear(h_[i+1][odd],
+                    logits += F.linear(h_[i+1][odd] if i+1 < len(h)-1 else h_[i+1][odd]/self.nMult,
                                        self.weight[i+1].t(), None)
                 if i+1 == len(h):
                     latent_logits[odd] = logits
@@ -344,40 +373,48 @@ class DBM(nn.Module):
                         else:
                             h_[i][odd] = Independent(Bernoulli(logits=logits), 1).sample()
                     else:
-                        h_[i][odd] = (rand_h[i][odd] < logits.sigmoid()).float()
+                        if i+1 == len(h):
+                            probs = torch.softmax(logits, dim=-1)
+                            cumsum_probs = torch.cumsum(probs, dim=-1)
+                            rand_vals = rand_h[i][odd]
+                            samples = torch.zeros_like(logits)
+                            for j in range(self.nMult):
+                                samples += (rand_vals < cumsum_probs).float()
+                            h_[i][odd] = samples
+                        else:
+                            h_[i][odd] = (rand_h[i][odd] < logits.sigmoid()).float()
 
         return v_, h_, latent_logits
 
     @torch.no_grad()
-    def mh_step(self, v, h, fix_v=False,
-                rand_v=None, rand_h=None, rand_u=None):
+    def mh_step(self, v, h, fix_v=False, rand_v=None, rand_h=None, rand_u=None):
         N = v.size(0)
         device = v.device
 
+        # propose v
         if fix_v:
             v_ = v
         else:
-            if rand_v is None:
-                v_ = torch.empty_like(v).bernoulli_()
-            else:
-                v_ = (rand_v < 0.5).float()
+            v_ = torch.empty_like(v).bernoulli_() if rand_v is None else (rand_v < 0.5).float()
 
-        if rand_h is None:
-            h_ = [torch.empty_like(h[i]).bernoulli_() for i in range(self.L)]
-        else:
-            h_ = [(rand_h[i] < 0.5).float() for i in range(self.L)]
+        # propose h (Bernoulli for inner layers, Multinomial for top)
+        h_ = []
+        for i in range(self.L):
+            if i == self.L - 1:  # TOP MULTINOMIAL
+                # logits depend on neighbors
+                logits = F.linear(h[i-1] if i > 0 else v_, self.weight[i], self.bias[i+1])
+                probs  = torch.softmax(logits, dim=-1)
+                samp   = Multinomial(total_count=self.nMult, probs=probs).sample()
+                h_.append(samp)
+            else:
+                h_.append(torch.empty_like(h[i]).bernoulli_())
 
         log_ratio = self.energy(v, h) - self.energy(v_, h_)
-
-        if rand_u is None:
-            accepted = log_ratio.exp().clamp(0, 1).bernoulli().bool()
-        else:
-            accepted = rand_u < log_ratio.exp()
+        accepted = (log_ratio.exp().clamp(0, 1).bernoulli().bool()) if rand_u is None else (rand_u < log_ratio.exp())
 
         if not fix_v:
             v = torch.where(accepted.unsqueeze(1), v_, v)
         h = [torch.where(accepted.unsqueeze(1), h_[i], h[i]) for i in range(self.L)]
-
         return v, h
 
     @torch.no_grad()

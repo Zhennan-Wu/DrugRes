@@ -77,3 +77,70 @@ def visualize_curve(energy_mean, energy_std, loss_mean, loss_std, epoch, log_dir
         writer.add_figure("Energy_Loss_Curves", fig, global_step=epoch)
 
     plt.close(fig)
+
+
+def transfer_state_to_data(state, struct_upbd):
+    """
+    Given the HDMM state, extract the mixture components and category assignments
+    in a format similar to the ground truth data for evaluation.
+
+    Args:
+        state: dict, the HDMM state returned by the model function or Gibbs sampler.
+        struct_upbd: dict, structure upper bounds.
+    Returns:
+        data: dict, containing 'word_dists' and 'category_assignments'.
+    """
+    N = state["words"]["obs"].shape[0]
+    data = {}
+    data["word_dists"] = state["mixture_components"]["generation"].detach().cpu().numpy()
+    data["reg_means"] = state["mixture_components"]["regression_mu"].detach().cpu().numpy()
+    data["reg_std"] = state["mixture_components"]["regression_sigma"].detach().cpu().numpy()
+    data["super_labels"], data["base_labels"] = transfer_hierarchy_to_data_labels(state["local_category_assignments"].detach().cpu().numpy(), [struct_upbd["G1"], struct_upbd["G2"]])
+    data["x_labels"] = state["words"]["z_gen"].detach().cpu().numpy()
+    data["y_labels"] = state["words"]["z_reg"].detach().cpu().numpy()
+    data["x"] = np.array(state["words"]["obs"])
+    data["y"] = np.array(state["words"]["reg"])
+
+    # Extract super-cluster mixture weights
+    G1 = struct_upbd["G1"]
+    G2 = struct_upbd["G2"]
+    S = G1
+    C = G2
+
+    super_weights = state["struct_values"]["G1"].detach().cpu().numpy()
+    assert super_weights.shape == (S, struct_upbd["G0"])
+    data["super_mix_weights"] = super_weights
+
+    base_weights = np.transpose(state["struct_values"]["G2"].detach().cpu().numpy(), (1, 0, 2))  # (S, C, K)
+    assert base_weights.shape == (S, C, struct_upbd["G0"])
+    data["child_mix_weights"] = base_weights
+
+    return data
+
+
+def transfer_hierarchy_to_data_labels(local_cats: np.ndarray, level_dims: list[int]) -> np.ndarray:
+    """
+    Reverse of transfer_data_labels_to_hierarchy.
+    Given local_cats and cluster sizes per level, reconstruct absolute labels.
+
+    Args:
+        local_cats: (N, L) array of local indices
+        level_dims: list of ints, max cluster size per level
+
+    Returns:
+        data_labels: (N, L) array of absolute indices per level
+    """
+    N, L = local_cats.shape
+    data_labels = np.zeros((N, L), dtype=np.int32)
+
+    # level 0: absolute = local (super labels)
+    data_labels[:, 0] = local_cats[:, 0]
+
+    # deeper levels: absolute id = parent_abs * K[level] + local_id
+    for level in range(1, L):
+        parent_abs = data_labels[:, level - 1]
+        data_labels[:, level] = parent_abs * level_dims[level] + local_cats[:, level]
+    
+    labels_per_level = [data_labels[:, i] for i in range(L)]
+
+    return labels_per_level

@@ -88,7 +88,6 @@ class HDMM:
         B0_b = jnp.broadcast_to(self.struct_params["gamma"], (self.K,))
         key, sub = jax.random.split(key)
         beta_0 = dist.Beta(B0_a, B0_b).sample(sub)
-        # print("top level beta_0 before set:", beta_0)
         beta_0 = beta_0.at[-1].set(1.0)  # last stick is always 1
         self.struct_values["P0"] = [B0_a, B0_b]
         self.struct_values["Prior0"] = copy.deepcopy(self.struct_values["P0"])
@@ -247,13 +246,10 @@ class HDMM:
         for parent_level in range(len(self.struct_upbd)):
             self.best_struct_values[f"Posterior{parent_level}"][0] = (1-lr)*self.best_struct_values[f"Posterior{parent_level}"][0] + lr*self.best_struct_values[f"P{parent_level}"][0]
             self.best_struct_values[f"Posterior{parent_level}"][1] = (1-lr)*self.best_struct_values[f"Posterior{parent_level}"][1] + lr*self.best_struct_values[f"P{parent_level}"][1]
-            # self.struct_values[f"Posterior{parent_level}"][0] = copy.deepcopy(self.best_struct_values[f"Posterior{parent_level}"][0])
-            # self.struct_values[f"Posterior{parent_level}"][1] = copy.deepcopy(self.best_struct_values[f"Posterior{parent_level}"][1])
+
             if (parent_level < len(self.struct_upbd) - 1):
                 self.best_struct_values[f"LPosterior{parent_level}"][0] = (1-lr)*self.best_struct_values[f"LPosterior{parent_level}"][0] + lr*self.best_struct_values[f"LP{parent_level}"][0]
                 self.best_struct_values[f"LPosterior{parent_level}"][1] = (1-lr)*self.best_struct_values[f"LPosterior{parent_level}"][1] + lr*self.best_struct_values[f"LP{parent_level}"][1]
-                # self.struct_values[f"LPosterior{parent_level}"][0] = copy.deepcopy(self.best_struct_values[f"LPosterior{parent_level}"][0])
-                # self.struct_values[f"LPosterior{parent_level}"][1] = copy.deepcopy(self.best_struct_values[f"LPosterior{parent_level}"][1])
 
         self.mixture_components_posterior["generation"] = (1-lr)*self.mixture_components_posterior["generation"] + lr*self.best_mixture_components["generation"]
         self.mixture_components_posterior["regression_mu"] = (1-lr)*self.mixture_components_posterior["regression_mu"] + lr*self.best_mixture_components["regression_mu"]
@@ -390,26 +386,19 @@ class HDMM:
             self.mixture_components["generation"] = known_mixtures["generation"]
 
         pbar = trange(num_iters, desc="Gibbs Sampling")
-        # def inside_get_doc_weights(rev_idx):
-        #     weight = partial_index(self.struct_values[f"G{len(self.cluster_dims)}"], rev_idx)
-        #     return weight
         
         for it in pbar:
             # ------------------------
             # Sample document-level weights and word/regression categories
             # ------------------------
-            # weight = jax.vmap(inside_get_doc_weights)(jnp.flip(local_category_assignments, axis=1))
             if (known_words is None):
                 key, sub = jax.random.split(key)
                 
-                # z_gen = self.vectorized_word_cat_gibbs(sub, obs, weight)
                 z_gen = self.vectorized_word_cat_gibbs(sub, obs, doc_values["G"])
-                # print("z_gen:", z_gen.shape)
 
             key, sub = jax.random.split(key)
-            # z_reg = self.vectorized_reg_cat_gibbs(sub, reg, weight)
+
             z_reg = self.vectorized_reg_cat_gibbs(sub, reg, doc_values["G"])
-            # print("z_reg shape:", z_reg.shape)
 
             key, sub = jax.random.split(key)
             doc_values = self.vectorized_doc_weight_gibbs(
@@ -597,22 +586,12 @@ class HDMM:
         key, sub = jax.random.split(key)
         beta = dist.Beta(new_params[0], new_params[1]).sample(sub)
         beta = beta.at[..., -1].set(1.0)  # last entry is always 1
-        # print("depth:", depth)
-        # print("rev_cat:", rev_cat)
-        # print("prev value", self.struct_values[f"P{depth}"][0])        
+   
         self.struct_values[f"P{depth}"][0] = set_by_multi_index(self.struct_values[f"P{depth}"][0], rev_cat, new_params[0])
 
-        # print("new params[0]:", new_params[0])
-        # print("updated value", self.struct_values[f"P{depth}"][0])
         self.struct_values[f"P{depth}"][1] = set_by_multi_index(self.struct_values[f"P{depth}"][1], rev_cat, new_params[1])
 
-        # print("new beta:", beta)
-        # print("updated value", self.struct_values[f"B{depth}"])
-        # print("prev value", self.struct_values[f"G{depth}"])
         self.struct_values[f"G{depth}"] = set_by_multi_index(self.struct_values[f"G{depth}"], rev_cat, mix_weights(beta))
-
-        # print("new G:", mix_weights(beta))
-        # print("updated value", self.struct_values[f"G{depth}"])
 
     def struct_cluster_gibbs(self, key, depth, row_idx, cats, local_category_assignments, scale_constant):
         new_params = self._cluster_weight_conditional(depth, cats, local_category_assignments[:, depth][row_idx], scale_constant)
@@ -643,11 +622,6 @@ class HDMM:
         else:
             params = [partial_index(self.struct_values[f"Prior{depth}"][0], rev_cat), partial_index(self.struct_values[f"Prior{depth}"][1], rev_cat)]
 
-            # print("depth:", depth)
-            # print("rev_cat:", rev_cat)
-            # print("ref value", self.struct_values[f"Prior{depth}"][0])
-            # print("selected params[0]:", params[0])
-
         cat_count = jnp.bincount(word_cats.ravel(), length=self.K)
         cat_idx = jnp.arange(self.K)
         reg_count = jnp.bincount(reg_cats.ravel(), length=self.K)
@@ -655,17 +629,7 @@ class HDMM:
 
         alpha_bias = jnp.zeros(self.K, dtype=jnp.int32).at[cat_idx].set(cat_count)
         beta_bias = suffix_sum(alpha_bias)
-        # print("depth:", depth)
-        # print("rev_cat:", rev_cat)
-        # if (depth > 0):
-        #     print("rev_shape", rev_cat.shape)
-        #     print(self.struct_values[f"Prior{depth}"][0].shape)
-        #     checking = partial_index(self.struct_values[f"Prior{depth}"][0], rev_cat)
-        #     print("checking:", checking.shape)
-        # print("alpha_bias:", alpha_bias.shape)
-        # print("beta_bias:", beta_bias.shape)
-        # print("params[0]:", params[0].shape)
-        # print("params[1]:", params[1].shape)
+
         new_params = [params[0] + alpha_bias*scale_constant, params[1] + beta_bias*scale_constant]
 
         return new_params
@@ -692,13 +656,6 @@ class HDMM:
         alpha_bias = jnp.zeros((self.K,), dtype=jnp.int32).at[cat_idx].set(cat_count)
         beta_bias = suffix_sum(alpha_bias)
 
-        # print(alpha_bias.shape, cat_count.shape)
-        # print(jnp.sum(alpha_bias == cat_count))
-        # print("alpha_bias:", alpha_bias.shape)
-        # print("beta_bias:", beta_bias.shape)
-        # print("params[0]:", params[0].shape)
-        # print("params[1]:", params[1].shape)
-
         new_params = [params[0] + alpha_bias*scale_constant, params[1] + beta_bias*scale_constant]
         return new_params
 
@@ -714,18 +671,12 @@ class HDMM:
             new_params: list of two (S,) arrays, updated Beta parameters [alpha, beta
             new_key: updated JAX PRNGKey
         """
-        # print("depth:", depth)
-        # print("cats:", cats)
+
         params = [partial_index(self.struct_values[f"LPrior{depth}"][0], cats), partial_index(self.struct_values[f"LPrior{depth}"][1], cats)]
         cat_count = jnp.bincount(local_cluster_cats.ravel(), length=self.cluster_dims[depth])
         cat_idx = jnp.arange(self.cluster_dims[depth])
         alpha_bias = jnp.zeros(self.cluster_dims[depth], dtype=jnp.int32).at[cat_idx].set(cat_count)
         beta_bias = suffix_sum(alpha_bias)
-
-        # print("alpha_bias:", alpha_bias.shape)
-        # print("beta_bias:", beta_bias.shape)
-        # print("params[0]:", params[0].shape)
-        # print("params[1]:", params[1].shape)
 
         new_params = [params[0] + alpha_bias*scale_constant, params[1] + beta_bias*scale_constant]
         return new_params
@@ -752,12 +703,10 @@ class HDMM:
             word_samples = jax.vmap(
                 lambda k, w: self.word_cat_gibbs(k, w, doc_weight)
             )(word_keys, obs_doc)
-            # print("word_samples shape:", word_samples.shape)
             return word_samples
 
         # Vectorize across documents
         z_gen = jax.vmap(sample_doc)(doc_keys, obs, doc_weights)
-        # print("z_gen shape:", z_gen.shape)
         return z_gen
 
     def vectorized_reg_cat_gibbs(self, key, reg, doc_weights):
@@ -815,28 +764,6 @@ class HDMM:
 
         alpha_new, beta_new, B_new, G_new = jax.vmap(update_doc)(subkeys, Priors, z_gen, z_reg)
 
-        # plt_dir = "./test_plt"
-        # import os
-        # os.makedirs(plt_dir, exist_ok=True) 
-        # for n in range(N):
-        #     plt.figure(figsize=(12,4))
-        #     plt.subplot(1,3,1)
-        #     plt.bar(jnp.arange(self.K), doc_values["G"][n], alpha=0.5, label="old G")
-        #     plt.bar(jnp.arange(self.K), G_new[n], alpha=0.5, label="new G")
-        #     plt.title(f"Document {n} Mixture Weights")
-        #     plt.legend()
-        #     plt.subplot(1,3,2)
-        #     plt.bar(jnp.arange(self.K), doc_values["B"][n], alpha=0.5, label="old B")
-        #     plt.bar(jnp.arange(self.K), B_new[n], alpha=0.5, label="new B")
-        #     plt.title(f"Document {n} Stick Weights")
-        #     plt.legend()
-        #     plt.subplot(1,3,3)
-        #     plt.bar(jnp.arange(self.K), doc_values["P"][0][n], alpha=0.5, label="old alpha")
-        #     plt.bar(jnp.arange(self.K), alpha_new[n], alpha=0.5, label="new alpha")
-        #     plt.title(f"Document {n} Alpha Params")
-        #     plt.legend()
-        #     plt.savefig(plt_dir + f"/doc_n{n}.png")
-        #     plt.close()
         # Update doc_values in a single functional operation
         doc_values = {
             **doc_values,
@@ -912,22 +839,6 @@ class HDMM:
 
             assert weight.shape[0] == self.cluster_dims[depth], "Weight shape mismatch."
             # --- Word-level likelihoods (vectorized over words) ---
-            # def word_log_prob(word, label):
-            #     word_log_prob = dist.Multinomial(
-            #         total_count=1,
-            #         probs=self.mixture_components["generation"][label]
-            #     ).log_prob(word)
-            #     cat_log_prob = jnp.broadcast_to(word_log_prob, (weight.shape[0],))
-            #     return cat_log_prob + jnp.log(weight[:, label] + 1e-12)
-
-            # log_prob_words = jax.vmap(word_log_prob)(obs_i, z_gen_i).sum(axis=0)
-            # log_prob = log_prob_words
-            # --- Regression term ---
-            # if not predict:
-            #     log_prob += jnp.broadcast_to(dist.Normal(
-            #         loc=self.mixture_components["regression_mu"][z_reg_i],
-            #         scale=self.mixture_components["regression_sigma"][z_reg_i],
-            #     ).log_prob(reg_i), (weight.shape[0],)) + jnp.log(weight[:, z_reg_i] + 1e-12)
 
             cat_counts = jnp.bincount(z_gen_i, length=self.K)
             if not predict:
@@ -968,7 +879,3 @@ if __name__ == "__main__":
     z_gen, z_reg, local_category_assignments, mc, log_prob = model.infer(obs, reg, num_iters=200, key=key)
     print("Inference completed.")
     likelihood_visualization(log_prob, np.zeros_like(log_prob), epoch=0)
-    # test_data = jax.random.randint(sub, (5, M, V), 0, 2)
-    # local_cats, doc_weights, log_prob = model.predict(test_data, num_iters=50, key=key)
-    # likelihood_visualization(log_prob, np.zeros_like(log_prob), epoch=1)
-    # print("Prediction completed.")

@@ -1,6 +1,10 @@
 import torch
 
 
+def rand_uniform(shape=(), minval=0.0, maxval=1.0):
+    return (minval + (maxval - minval) * torch.rand(shape,))
+
+
 def safe_positive(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     x_safe = torch.where(x > 0, x, torch.full_like(x, eps))
     return x_safe
@@ -17,8 +21,9 @@ def stats_by_label(data: torch.Tensor, labels: torch.Tensor, num_classes: int, e
         sum_variances: (num_classes,)
         counts: (num_classes,)
     """
+    assert data.shape[0] == labels.shape[0], "Data and labels must have the same number of samples."
     if data.dim() == 1:
-        data = data.unsqueeze(1)  # (N, 1)
+        data = data.unsqueeze(1)  # (N, D) where D=1
 
     N, D = data.shape
     one_hot = torch.nn.functional.one_hot(labels, num_classes=num_classes).float()  # (N, C)
@@ -29,17 +34,17 @@ def stats_by_label(data: torch.Tensor, labels: torch.Tensor, num_classes: int, e
 
     # Mean per class
     sums = one_hot.T @ data  # (C, D)
-    means = sums / safe_counts.unsqueeze(1)
+    means = sums / safe_counts.unsqueeze(1) # (C, D)
 
     # Variance per class
     diff = data.unsqueeze(1) - means.unsqueeze(0)  # (N, C, D)
     sq_diff = diff.pow(2)
     weighted_sq = one_hot.unsqueeze(2) * sq_diff
     var_sums = weighted_sq.sum(dim=0)  # (C, D)
-    variances = var_sums / safe_counts.unsqueeze(1)
+    variances = var_sums / safe_counts.unsqueeze(1) # (C, D)
 
     # Sum of variances per label (scalar)
-    sum_variances = variances.sum(dim=1)
+    sum_variances = variances.sum(dim=1) # (C,)
 
     # Explicitly zero-out stats for empty components
     empty = counts == 0
@@ -47,7 +52,7 @@ def stats_by_label(data: torch.Tensor, labels: torch.Tensor, num_classes: int, e
     variances[empty] = 0.0
     sum_variances[empty] = 0.0
 
-    return means, variances, sum_variances, counts
+    return means, variances, sum_variances, counts, sums
 
 
 def get_unique_rows_and_positions(x: torch.Tensor):
