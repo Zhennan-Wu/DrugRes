@@ -1,4 +1,83 @@
 import torch
+import itertools
+
+
+def broadcast_to_largest(tensors):
+    """
+    Broadcast a list of tensors to the largest shape.
+    All tensors must be broadcast-compatible.
+    """
+
+
+    # find the max ndim
+    max_ndim = max(t.ndim for t in tensors)
+    # right-align shapes (like numpy broadcasting)
+    shapes = [((1,) * (max_ndim - t.ndim) + t.shape) for t in tensors]
+    # compute target shape
+    target_shape = tuple(max(sizes) for sizes in zip(*shapes))
+
+    # broadcast each tensor
+    broadcasted = [t.reshape((1,) * (max_ndim - t.ndim) + t.shape).expand(target_shape)
+                   for t in tensors]
+    return broadcasted, target_shape
+
+
+def random_row_mix(a: torch.Tensor, b: torch.Tensor, p: float = 0.5) -> torch.Tensor:
+    """
+    Randomly select elements (or rows) from a and b to create a new tensor.
+    Handles 0D (scalar), 1D (vector), and ND tensors.
+    Autograd-safe (no in-place ops).
+
+    Args:
+        a: Tensor of arbitrary shape (..., )
+        b: Tensor of the same shape as a
+        p: Probability of choosing element(s) from a (default 0.5)
+
+    Returns:
+        mixed: Tensor of same shape as a/b
+    """
+    assert a.shape == b.shape, f"a and b must have the same shape, got {a.shape} vs {b.shape}"
+    device = a.device
+    dtype = a.dtype
+
+    # Handle scalar (0D) case
+    if a.ndim == 0:
+        mask = (torch.rand((), device=device) < p).float()
+        mixed = mask * a + (1 - mask) * b
+        return mixed.to(dtype).to(device)
+
+    # Handle 1D or higher
+    # Random mask for first dimension if N>1 else element-wise
+    if a.ndim == 1:
+        mask = (torch.rand(a.shape, device=device) < p).float()
+    else:
+        N = a.shape[0]
+        mask = (torch.rand((N,), device=device) < p).float().view(N, *([1] * (a.ndim - 1)))
+    # print("remain {} out of {}".format(int(mask.sum().item()), a.shape[0]))
+    mixed = mask * a + (1 - mask) * b
+    return mixed.to(dtype).to(device)
+
+
+def mix_update(a: torch.Tensor, b: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """
+    Autograd-safe mix update of `a` and `b` using `mask`.
+    Supports both element-wise and row-wise updates.
+
+    Args:
+        a: Tensor of arbitrary shape (..., )
+        b: Tensor of the same shape as a
+        mask: Float tensor broadcast-compatible with a/b.
+              Values in [0, 1], where 1 means take from `a`, 0 means take from `b`.
+
+    Returns:
+        mixed: Tensor of same shape as a/b
+    """
+    assert a.shape == b.shape, f"a and b must have the same shape, got {a.shape} vs {b.shape}"
+    assert a.shape[0] == mask.shape[0], f"mask first dimension must match a/b first dimension, got {a.shape[0]} vs {mask.shape[0]}"
+    a_mask = mask.view(a.shape[0], *([1] * (a.ndim - 1)))
+    mixed = a_mask * a + (1 - a_mask) * b
+    # print("mix_update: remain {} out of {}".format(int(mask.sum().item()), a.shape[0]))
+    return mixed.to(a.dtype).to(a.device)
 
 
 def rand_uniform(shape=(), minval=0.0, maxval=1.0):

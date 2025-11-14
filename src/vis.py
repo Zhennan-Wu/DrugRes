@@ -8,6 +8,9 @@ import jax
 import torch
 from utils import transfer_state_to_data
 
+import itertools
+
+
 
 def data_summary(model_return, data, struct_upbd, log_dir=None):
     N = data["x"].shape[0]
@@ -250,3 +253,40 @@ def hdmm_visualization(model, file_prefix):
             cat_str = "_".join([str(c) for c in cat.tolist()])
             plt.savefig(f"{file_prefix}_hdmm_mixture_weights_category_hierarchy_{cat_str}.png")
             plt.close()
+
+
+def plot_bars_for_tensor(a: np.ndarray, title_prefix="Slice", save_dir=None):
+    """
+    Plot bar plots for all slices along the last dimension of a tensor.
+
+    Args:
+        a: torch.Tensor of shape (d1, d2, ..., dk)
+        title_prefix: prefix for each subplot title
+        save_dir: optional path to save plots instead of showing
+    """
+    shape = a.shape
+    dim_labels = [f"d{i+1}" for i in range(len(shape))]
+    num_slices = int(np.prod(shape[:-1]))
+
+    print(f"Tensor shape = {shape}, total slices = {num_slices}")
+
+    # Iterate over all index tuples for dimensions except the last one
+    for idx in itertools.product(*[range(s) for s in shape[:-1]]):
+        vals = a[idx]  # shape (last_dim,)
+        fig, ax = plt.subplots()
+        ax.bar(range(shape[-1]), vals.flatten())
+
+        title = f"{title_prefix} {idx} (over last dim {dim_labels[-1]}={shape[-1]})"
+        ax.set_title(title)
+        ax.set_xlabel(dim_labels[-1])
+        ax.set_ylabel("Value")
+        ax.set_xticks(range(shape[-1]))
+
+        if save_dir:
+            import os
+            os.makedirs(save_dir, exist_ok=True)
+            fname = "_".join(map(str, idx))
+            plt.savefig(f"{save_dir}/{title_prefix}_{fname}.png", bbox_inches="tight")
+            plt.close(fig)
+        else:
+            plt.show()
