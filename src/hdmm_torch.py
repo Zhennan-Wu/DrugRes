@@ -329,7 +329,7 @@ class HDMM(nn.Module):
 
         self.best_log_prob = -torch.inf
         
-        self.struct_params = nn.ParameterDict()
+        self.struct_params = {}
         self.init_tunable_hyperparameters()
         self.init_structure()
         self.init_mixture_components()
@@ -845,6 +845,7 @@ class HDMM(nn.Module):
         if gamma_reg is None:
             gamma_reg = [False]*len(self.param_dims)
         max_kappa = kwargs.get("max_kappa", None)
+        kappa_iter = kwargs.get("kappa_iter", 1)
 
         if max_kappa is None:
             max_kappa = [10*(i+1) for i in range(len(self.param_dims))]
@@ -1090,9 +1091,9 @@ class HDMM(nn.Module):
                 weights.append(weight)
             weights = torch.stack(weights, dim=0)
             if gamma_reg[0]:
-                new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior0"][0], gamma_rate=self.struct_params[f"gamma_prior0"][1]) + param_por * param
+                new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior0"][0], gamma_rate=self.struct_params[f"gamma_prior0"][1], max_iters=kappa_iter) + param_por * param
             else:
-                new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, max_kappa=max_kappa[0]) + param_por * param
+                new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, max_kappa=max_kappa[0], max_iters=kappa_iter) + param_por * param
             assert_valid_dirichlet_param(new_param)
             self.struct_params[f"alpha0"] = new_param
             
@@ -1112,9 +1113,9 @@ class HDMM(nn.Module):
                             weights.append(weight)
                         weights = torch.stack(weights, dim=0)
                         if gamma_reg[depth]:
-                            new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior{depth}"][0], gamma_rate=self.struct_params[f"gamma_prior{depth}"][1]) + param_por * param
+                            new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior{depth}"][0], gamma_rate=self.struct_params[f"gamma_prior{depth}"][1], max_iters=kappa_iter) + param_por * param
                         else:
-                            new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, max_kappa=max_kappa[depth]) + param_por * param
+                            new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, max_kappa=max_kappa[depth], max_iters=kappa_iter) + param_por * param
                         assert_valid_dirichlet_param(new_param)
                         self.struct_params[f"alpha{depth}"] = safe_update_scatter(
                             self.struct_params[f"alpha{depth}"],
@@ -1130,9 +1131,9 @@ class HDMM(nn.Module):
                 prior = self.SV[f"G{len(self.param_dims)-1}"][tuple(rev_idx)]
                 param = self.struct_params[f"alpha{len(self.param_dims)-1}"][tuple(rev_idx)]
                 if gamma_reg[len(self.param_dims)-1]:
-                    new_alpha = (1 - param_por) * estimate_kappa_batched(doc_weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior{len(self.param_dims)-1}"][0], gamma_rate=self.struct_params[f"gamma_prior{len(self.param_dims)-1}"][1]) + param_por * param
+                    new_alpha = (1 - param_por) * estimate_kappa_batched(doc_weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior{len(self.param_dims)-1}"][0], gamma_rate=self.struct_params[f"gamma_prior{len(self.param_dims)-1}"][1], max_iters=kappa_iter) + param_por * param
                 else:
-                    new_alpha = (1 - param_por) * estimate_kappa_batched(doc_weights, prior, param, max_kappa=max_kappa[len(self.param_dims)-1]) + param_por * param
+                    new_alpha = (1 - param_por) * estimate_kappa_batched(doc_weights, prior, param, max_kappa=max_kappa[len(self.param_dims)-1], max_iters=kappa_iter) + param_por * param
                 assert_valid_dirichlet_param(new_alpha)
 
                 self.struct_params[f"alpha{len(self.param_dims)-1}"] = safe_update_scatter(
