@@ -4,3 +4,6 @@ conda version 24.1.2 python 3.11.7 loaded.
   warnings.warn(  # warn only once
 /N/u/zwu1/Quartz/.conda/envs/jax_env/lib/python3.12/site-packages/torch/distributed/distributed_c10d.py:4876: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
   warnings.warn(  # warn only once
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+  0%|          | 0/1000 [00:00<?, ?it/s]  0%|          | 0/1000 [00:00<?, ?it/s][2025-11-08T02:05:50.015] error: *** STEP 7413105.0 ON g27 CANCELLED AT 2025-11-08T02:05:50 DUE TO TIME LIMIT ***
+[2025-11-08T02:05:50.015] error: *** JOB 7413105 ON g27 CANCELLED AT 2025-11-08T02:05:50 DUE TO TIME LIMIT ***
