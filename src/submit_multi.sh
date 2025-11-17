@@ -5,7 +5,8 @@
 #SBATCH -e ../outputs/dbm_multi_error_%j.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=zwu1@iu.edu
-#SBATCH -p gpu
+#SBATCH -q hopper
+#SBATCH -p hopper
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=2
 #SBATCH --gpus-per-node=2
