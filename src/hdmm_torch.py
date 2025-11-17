@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import lgamma
-from torch.distributions import Dirichlet, Normal, InverseGamma, Multinomial, Categorical, Beta
+from torch.distributions import Dirichlet, Normal, InverseGamma, Multinomial, Categorical, Beta, Gamma
 
 from tqdm import trange
 import copy
@@ -12,7 +12,13 @@ from hdmm_utils_torch import mix_weights, suffix_sum, get_unique_rows_and_positi
 from vis import likelihood_visualization
 
 
-def truncated_stick_breaking(param_alpha: torch.Tensor, param_beta: torch.Tensor, sample_shape: tuple, truncate_dim: int = -1) -> torch.Tensor:
+def assert_valid_dirichlet_param(t: torch.Tensor):
+    assert torch.isfinite(t).all(), "Found +inf/-inf in Dirichlet parameter"
+    assert not torch.isnan(t).any(), "Found NaNs in Dirichlet parameter"
+    assert (t > 0).all(), "Dirichlet parameters must be strictly positive"
+
+
+def truncated_stick_breaking(param_alpha: torch.Tensor, param_beta: torch.Tensor, sample_shape: tuple, truncate_dim: int = -1, arg_max=False) -> torch.Tensor:
     """
     Truncated stick-breaking process to generate mixture weights.
 
@@ -24,7 +30,10 @@ def truncated_stick_breaking(param_alpha: torch.Tensor, param_beta: torch.Tensor
     Returns:
         Tensor of mixture weights with last weight set to 1.
     """
-    beta_samples = Beta(safe_positive(param_alpha), safe_positive(param_beta)).sample(sample_shape)
+    if arg_max:
+        beta_samples = (safe_positive(param_alpha) - 1) / (safe_positive(param_alpha) + safe_positive(param_beta) - 2)
+    else:
+        beta_samples = Beta(safe_positive(param_alpha), safe_positive(param_beta)).sample(sample_shape)
     assert beta_samples.shape == sample_shape + param_alpha.shape
     if truncate_dim == -1:
         beta_samples = torch.cat((beta_samples[..., :-1], torch.ones_like(beta_samples[..., -1:])), dim=-1)  # last stick = 1
@@ -179,18 +188,141 @@ def dirichlet_multinomial_logpmf(counts: torch.Tensor,
     return logp   # shape (N, M)
 
 
+def estimate_kappa_batched(
+    X: torch.Tensor,          # (n0, n1, ..., K)
+    theta: torch.Tensor,      # (n1, ..., K)
+    kappa_init: torch.Tensor, # (n1, ..., K)
+    gamma_shape=1.0,          # a0 (can be float or tensor broadcastable to kappa)
+    gamma_rate=0.0,           # b0 (can be float or tensor broadcastable to kappa)
+    max_iters: int = 1,
+    tol: float = 1e-6,
+    eps: float = 1e-8,
+    max_kappa: float = 1e2,   # hard ceiling to avoid +inf
+):
+    """
+    Fully robust Newton solver for Dirichlet concentration κ with Gamma(a0, b0) prior.
+
+    Guarantees:
+        - κ > 0
+        - κ finite (no inf, no nan)
+        - κ has same shape as kappa_init
+
+    Prior: κ ~ Gamma(gamma_shape, gamma_rate)  (shape–rate parameterization)
+    """
+
+    device = X.device
+    out_dtype = kappa_init.dtype
+
+    # Work in float64 for numerical stability
+    X = X.to(device=device, dtype=torch.float64)
+    theta = theta.to(device=device, dtype=torch.float64)
+
+    # scalar κ per location (shape: n1 x n2 x ... x nm)
+    kappa = kappa_init[..., 0].to(device=device, dtype=torch.float64)
+
+    # Broadcast Gamma prior params to shape of kappa
+    a0 = torch.as_tensor(gamma_shape, dtype=torch.float64, device=device)
+    b0 = torch.as_tensor(gamma_rate, dtype=torch.float64, device=device)
+    a0 = a0.expand_as(kappa)
+    b0 = b0.expand_as(kappa)
+
+    # average log X over samples
+    s = X.log().mean(dim=0)   # (..., K)
+
+    for _ in range(max_iters):
+        # 1) Force κ to be strictly positive & within finite range
+        kappa = torch.clamp(kappa, min=eps, max=max_kappa)
+
+        # 2) Compute κ·θ
+        kappa_theta = kappa.unsqueeze(-1) * theta  # (..., K)
+
+        # 3) Log-likelihood gradient g_ll and Hessian gp_ll
+        term1 = torch.digamma(kappa)                              # (...)
+        term2 = (theta * torch.digamma(kappa_theta)).sum(dim=-1)
+        term3 = (theta * s).sum(dim=-1)
+        g_ll = term1 - term2 + term3
+
+        term1p = torch.polygamma(1, kappa)
+        term2p = (theta**2 * torch.polygamma(1, kappa_theta)).sum(dim=-1)
+        gp_ll = term1p - term2p
+
+        # 4) Add Gamma(a0, b0) prior: log p(κ) = (a0-1) log κ - b0 κ + const
+        #    ∂/∂κ log p(κ)      = (a0-1)/κ - b0
+        #    ∂²/∂κ² log p(κ)    = -(a0-1)/κ²
+        grad_prior = (a0 - 1.0) / kappa - b0
+        hess_prior = -(a0 - 1.0) / (kappa ** 2 + eps)   # add eps to avoid /0
+
+        # Posterior gradient and Hessian
+        g_post = g_ll + grad_prior
+        gp_post = gp_ll + hess_prior
+
+        # Replace tiny or zero Hessian with safe small number
+        gp_post = torch.where(gp_post.abs() < eps,
+                              torch.full_like(gp_post, eps),
+                              gp_post)
+
+        delta = g_post / gp_post
+
+        # 5) Newton update
+        kappa_new = kappa - delta
+
+        # ---- SAFETY LAYERS ----
+
+        # A) positivity: if κ_new <= eps, fallback to conservative half-step
+        kappa_new = torch.where(kappa_new <= eps,
+                                0.5 * kappa,
+                                kappa_new)
+
+        # B) inf or nan fallback → also conservative half-step
+        bad = torch.isnan(kappa_new) | torch.isinf(kappa_new)
+        if bad.any():
+            kappa_new = torch.where(bad, 0.5 * kappa, kappa_new)
+
+        # C) clamp final κ to finite positive interval
+        kappa_new = torch.clamp(kappa_new, min=eps, max=max_kappa)
+
+        # 6) Convergence
+        if torch.max(torch.abs(kappa_new - kappa)) < tol:
+            kappa = kappa_new
+            break
+
+        kappa = kappa_new
+
+    # Expand κ back to shape (..., K)
+    K = kappa_init.shape[-1]
+    kappa_final = kappa.unsqueeze(-1).expand(*kappa_init.shape)
+
+    # Convert back to original dtype
+    kappa_final = kappa_final.to(dtype=out_dtype)
+
+    # 7) FINAL CHECK — ensure no NaN or INF
+    bad = torch.isnan(kappa_final) | torch.isinf(kappa_final)
+    if bad.any():
+        kappa_final = torch.where(
+            bad, torch.full_like(kappa_final, eps), kappa_final
+        )
+
+    # Final clamp ensures everything is finite & positive
+    kappa_final = torch.clamp(kappa_final, min=eps, max=max_kappa)
+
+    return kappa_final
+
+
 class HDMM(nn.Module):
-    def __init__(self, struct_upbd, *args, **kwargs):
+    def __init__(self, struct_upbd, gamma_alpha, gamma_rate, *args, **kwargs):
         super().__init__()
         torch.set_grad_enabled(False)
         torch.set_default_dtype(torch.float32)
 
         self.struct_upbd = struct_upbd
         self.K = int(struct_upbd["G0"])
+        self.gamma_alpha = gamma_alpha
+        self.gamma_rate = gamma_rate
         self.param_dims = list(struct_upbd.values())[::-1]
         self.cluster_dims = self.param_dims[:-1][::-1]
 
         self.vocab_size = kwargs.get("vocab_size", 10000)
+        self.reg_weight = kwargs.get("reg_weight", 1)
         self.device = kwargs.get("device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         self.seed = kwargs.get("seed", 0)
         torch.manual_seed(self.seed)
@@ -210,33 +342,21 @@ class HDMM(nn.Module):
         """
 
         # Core scalar hyperparameters
-        self.struct_params["gamma"] = nn.Parameter(rand_uniform((), 0.5, 1.)).to(self.device)
-        # self.struct_params["gamma"] = nn.Parameter(torch.tensor(0.7)).to(self.device)
+        self.struct_params["gamma"] = Gamma(5, 5).sample().to(self.device)
         print(f"Initialized gamma: {self.struct_params['gamma'].item():.4f}")
-        # self.struct_params[f"alpha{0}"] = nn.Parameter(torch.tensor([0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9])).to(self.device)
-        #  self.struct_params[f"alpha{1}"] = nn.Parameter(torch.tensor([[1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2], [1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2]])).to(self.device)
-        # Initialized gamma: 0.6545
-        # Initialized alpha0: Parameter containing:
-        # tensor([1.1137, 1.1779, 1.1081, 1.1803, 1.1288, 1.1921, 1.1975, 1.2185, 1.2927,
-        #         1.1246], requires_grad=True)
-        # Initialized alpha1: Parameter containing:
-        # tensor([[1.1997, 1.2997, 1.2210, 1.2046, 1.2395, 1.1501, 1.1725, 1.1924, 1.2429,
-        #         1.2012],
-        #         [1.1104, 1.1498, 1.1479, 1.1847, 1.1004, 1.2370, 1.2499, 1.1498, 1.1698,
-        #         1.1391]], requires_grad=True)
         # Hierarchical alpha/eta initialization
         for depth in range(len(self.param_dims)):
             child_level = depth + 1
 
             if depth < len(self.param_dims) - 1:
             # α parameter
-                # self.struct_params[f"alpha{depth}"] = nn.Parameter(rand_uniform(tuple(self.param_dims[-child_level:]), math.pow(6, depth), math.pow(6, depth))).to(self.device)
-                # self.struct_params[f"alpha{depth}"] = nn.Parameter(rand_uniform(tuple(self.param_dims[-child_level:]), math.pow(10, len(self.param_dims) - child_level), math.pow(10, len(self.param_dims) - child_level+1))).to(self.device)
-                self.struct_params[f"alpha{depth}"] = nn.Parameter(rand_uniform(tuple(self.param_dims[-child_level:-1]), 0.5, 1.).unsqueeze(-1).expand(*self.param_dims[-child_level:])).to(self.device)
+                self.struct_params[f"gamma_prior{depth}"] = (self.gamma_alpha[depth], self.gamma_rate[depth])  # shape parameters for Gamma prior on alpha
+                self.struct_params[f"alpha{depth}"] = Gamma(self.struct_params[f"gamma_prior{depth}"][0], self.struct_params[f"gamma_prior{depth}"][1]).sample(tuple(self.param_dims[-child_level:-1])).unsqueeze(-1).expand(*self.param_dims[-child_level:]).to(self.device)
                 print(f"Initialized alpha{depth}: {self.struct_params[f'alpha{depth}']}")
                 # η parameter
-                self.struct_params[f"eta{depth}"] = nn.Parameter(rand_uniform(tuple(self.param_dims[-child_level:-1]), 0.1, 1.0)).to(self.device)
-        self.struct_params[f"alpha{len(self.param_dims) - 1}"] = nn.Parameter(rand_uniform(tuple(self.param_dims), 10, 20)).to(self.device)
+                self.struct_params[f"eta{depth}"] = Gamma(5,5).sample(tuple(self.param_dims[-child_level:-1])).to(self.device)
+        self.struct_params[f"gamma_prior{len(self.param_dims) - 1}"] = (self.gamma_alpha[len(self.param_dims) - 1], self.gamma_rate[len(self.param_dims) - 1])  # shape parameters for Gamma prior on alpha
+        self.struct_params[f"alpha{len(self.param_dims) - 1}"] = Gamma(self.struct_params[f"gamma_prior{len(self.param_dims) - 1}"][0], self.struct_params[f"gamma_prior{len(self.param_dims) - 1}"][1]).sample(tuple(self.param_dims)).to(self.device)
         # print(f"Initialized alpha{len(self.param_dims) - 1}: {self.struct_params[f'alpha{len(self.param_dims) - 1}']}")
 
     @torch.no_grad()
@@ -714,11 +834,20 @@ class HDMM(nn.Module):
         sanity_check = kwargs.get("sanity_check", True)
         plot_gap = kwargs.get("plot_gap", 50)
         log_dir = kwargs.get("log_dir", None)
-        reserve_rate = kwargs.get("reserve_rate", [1. - 1e-3, 0.99, 0.9])
+        # reserve_rate = kwargs.get("reserve_rate", [1. - 1e-3, 0.99, 0.9, 0.])
+        reserve_rate = kwargs.get("reserve_rate", [0., 0., 0., 0.])
         heuristic_prelearn = kwargs.get("heuristic_prelearn", True)
         word_por = reserve_rate[0]
         old_por = reserve_rate[1]
         struct_old_por = reserve_rate[2]
+        param_por = reserve_rate[3]
+        gamma_reg = kwargs.get("gamma_reg", None)
+        if gamma_reg is None:
+            gamma_reg = [False]*len(self.param_dims)
+        max_kappa = kwargs.get("max_kappa", None)
+
+        if max_kappa is None:
+            max_kappa = [10*(i+1) for i in range(len(self.param_dims))]
 
         best_z_gen = None
         best_z_reg = None
@@ -945,6 +1074,74 @@ class HDMM(nn.Module):
                         new_LG = self.struct_cluster_gibbs(depth, rev_cats, positions, local_category_assignments, scale_constant, sanity_check=sanity_check)
                         self.SV[f"LG{depth}"] = random_row_mix(self.SV[f"LG{depth}"], new_LG, p=struct_old_por)
 
+
+            # ------------------------
+            # 9. Update structural params
+            # ------------------------
+
+            # print("initial alpha0:", self.struct_params[f"alpha0"])
+            prior = self.SV[f"G0"]
+            param = self.struct_params[f"alpha0"]
+            unique_childs, child_poses = get_unique_rows_and_positions(local_category_assignments[:, :1])
+            weights = []
+            for child_row, child_pos in zip(unique_childs, child_poses):
+                rev_child_idx = torch.flip(child_row, dims=[0]).to(self.device)
+                weight = self.SV[f"G1"][tuple(rev_child_idx)]
+                weights.append(weight)
+            weights = torch.stack(weights, dim=0)
+            if gamma_reg[0]:
+                new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior0"][0], gamma_rate=self.struct_params[f"gamma_prior0"][1]) + param_por * param
+            else:
+                new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, max_kappa=max_kappa[0]) + param_por * param
+            assert_valid_dirichlet_param(new_param)
+            self.struct_params[f"alpha0"] = new_param
+            
+            if len(self.cluster_dims) > 1:
+                for depth in range(1, len(self.cluster_dims)):
+                    unique_rows, positions = get_unique_rows_and_positions(local_category_assignments[:, :depth])
+                    for row, pos in zip(unique_rows, positions):
+                        rev_idx  = torch.flip(row, dims=[0]).to(self.device)
+                        prior = self.SV[f"G{depth}"][tuple(rev_idx)]
+                        param = self.struct_params[f"alpha{depth}"][tuple(rev_idx)]
+                        same_parent_childs = local_category_assignments[pos]
+                        unique_childs, child_poses = get_unique_rows_and_positions(same_parent_childs[:, :depth+1])
+                        weights = []
+                        for child_row, child_pos in zip(unique_childs, child_poses):
+                            rev_child_idx = torch.flip(child_row, dims=[0]).to(self.device)
+                            weight = self.SV[f"G{depth+1}"][tuple(rev_child_idx)]
+                            weights.append(weight)
+                        weights = torch.stack(weights, dim=0)
+                        if gamma_reg[depth]:
+                            new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior{depth}"][0], gamma_rate=self.struct_params[f"gamma_prior{depth}"][1]) + param_por * param
+                        else:
+                            new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, max_kappa=max_kappa[depth]) + param_por * param
+                        assert_valid_dirichlet_param(new_param)
+                        self.struct_params[f"alpha{depth}"] = safe_update_scatter(
+                            self.struct_params[f"alpha{depth}"],
+                            rev_idx,
+                            new_param,
+                            dim=-1
+                        )
+            
+            unique_rows, positions = get_unique_rows_and_positions(local_category_assignments)
+            for row, pos in zip(unique_rows, positions):
+                rev_idx = torch.flip(row, dims=[0]).to(self.device)
+                doc_weights = doc_values["G"][pos]
+                prior = self.SV[f"G{len(self.param_dims)-1}"][tuple(rev_idx)]
+                param = self.struct_params[f"alpha{len(self.param_dims)-1}"][tuple(rev_idx)]
+                if gamma_reg[len(self.param_dims)-1]:
+                    new_alpha = (1 - param_por) * estimate_kappa_batched(doc_weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior{len(self.param_dims)-1}"][0], gamma_rate=self.struct_params[f"gamma_prior{len(self.param_dims)-1}"][1]) + param_por * param
+                else:
+                    new_alpha = (1 - param_por) * estimate_kappa_batched(doc_weights, prior, param, max_kappa=max_kappa[len(self.param_dims)-1]) + param_por * param
+                assert_valid_dirichlet_param(new_alpha)
+
+                self.struct_params[f"alpha{len(self.param_dims)-1}"] = safe_update_scatter(
+                    self.struct_params[f"alpha{len(self.param_dims)-1}"],
+                    rev_idx,
+                    new_alpha,
+                    dim=-1
+                )
+
             # ------------------------
             # 9. Compute log-likelihood and update best state
             # ------------------------
@@ -978,7 +1175,10 @@ class HDMM(nn.Module):
         #     best_doc_values,
         #     torch.tensor(log_probs)
         # )
-        
+        print("Final learned alpha parameters:")
+        for depth in range(len(self.cluster_dims)):
+            print(f"alpha {depth}", self.struct_params[f"alpha{depth}"])
+            
         return (
             z_gen,
             z_reg,
@@ -1183,6 +1383,10 @@ class HDMM(nn.Module):
                 advanced_multi_index_select(self.SV[f"P{depth}"][1], rev_cat, dims=idx_dims)
             ]
             if sanity_check:
+                # print("depth:", depth)
+                # print("params alpha:", params[0])
+                # print("ref", rev_cat)
+                # print("SV", self.SV[f"P{depth}"][0])
                 assert torch.allclose(params[0], self.SV[f"P{depth}"][0][tuple(rev_cat[:, i] for i in range(rev_cat.shape[1]))])
                 assert torch.allclose(params[1], self.SV[f"P{depth}"][1][tuple(rev_cat[:, i] for i in range(rev_cat.shape[1]))])
 
@@ -1691,7 +1895,7 @@ class HDMM(nn.Module):
         if not predict:
             if reg_cats.dim() == 1:
                 reg_cats = reg_cats.unsqueeze(1)
-            cat_count.scatter_add_(1, reg_cats, torch.ones_like(reg_cats))
+            cat_count.scatter_add_(1, reg_cats, int(self.reg_weight)*torch.ones_like(reg_cats))
         assert cat_count.shape == (gen_cats.shape[0], K), f"Shape mismatch: cat_count {cat_count.shape} vs expected {(gen_cats.shape[0], K)}"
 
         return cat_count
