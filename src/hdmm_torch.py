@@ -846,6 +846,7 @@ class HDMM(nn.Module):
             gamma_reg = [False]*len(self.param_dims)
         max_kappa = kwargs.get("max_kappa", None)
         kappa_iter = kwargs.get("kappa_iter", 1)
+        gamma_collapse = kwargs.get("gamma_collapse", False)
 
         if max_kappa is None:
             max_kappa = [10*(i+1) for i in range(len(self.param_dims))]
@@ -1076,72 +1077,104 @@ class HDMM(nn.Module):
                         self.SV[f"LG{depth}"] = random_row_mix(self.SV[f"LG{depth}"], new_LG, p=struct_old_por)
 
 
-            # ------------------------
-            # 9. Update structural params
-            # ------------------------
+            # # ------------------------
+            # # 9. Update structural params
+            # # ------------------------
+            # if gamma_collapse:
+            #     for depth in range(len(self.param_dims)):
+            #         if depth == 0:
+            #             rev_idx = torch.flip(local_category_assignments, dims=[1]).to(self.device)
+            #             doc_weights = doc_values["G"]
+            #             prior = self.SV[f"G0"]
+            #             param = self.struct_params[f"alpha0"]
+            #             if gamma_reg[depth]:
+            #                 new_alpha = (1 - param_por) * estimate_kappa_batched(doc_weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior{depth}"][0], gamma_rate=self.struct_params[f"gamma_prior{depth}"][1], max_iters=kappa_iter) + param_por * param
+            #             else:
+            #                 new_alpha = (1 - param_por) * estimate_kappa_batched(doc_weights, prior, param, max_kappa=max_kappa[depth], max_iters=kappa_iter) + param_por * param
+            #             assert_valid_dirichlet_param(new_alpha)
+            #             self.struct_params[f"alpha0"] = new_alpha
+            #         else:
+            #             unique_rows, positions = get_unique_rows_and_positions(local_category_assignments[:, :depth])
+            #             for row, pos in zip(unique_rows, positions):
+            #                 rev_idx = torch.flip(row, dims=[0]).to(self.device)
+            #                 doc_weights = doc_values["G"][pos]
+            #                 prior = self.SV[f"G{depth}"][tuple(rev_idx)]
+            #                 param = self.struct_params[f"alpha{depth}"][tuple(rev_idx)]
+            #                 if gamma_reg[depth]:
+            #                     new_alpha = (1 - param_por) * estimate_kappa_batched(doc_weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior{depth}"][0], gamma_rate=self.struct_params[f"gamma_prior{depth}"][1], max_iters=kappa_iter) + param_por * param
+            #                 else:
+            #                     new_alpha = (1 - param_por) * estimate_kappa_batched(doc_weights, prior, param, max_kappa=max_kappa[depth], max_iters=kappa_iter) + param_por * param
+            #                 assert_valid_dirichlet_param(new_alpha)
 
-            # print("initial alpha0:", self.struct_params[f"alpha0"])
-            prior = self.SV[f"G0"]
-            param = self.struct_params[f"alpha0"]
-            unique_childs, child_poses = get_unique_rows_and_positions(local_category_assignments[:, :1])
-            weights = []
-            for child_row, child_pos in zip(unique_childs, child_poses):
-                rev_child_idx = torch.flip(child_row, dims=[0]).to(self.device)
-                weight = self.SV[f"G1"][tuple(rev_child_idx)]
-                weights.append(weight)
-            weights = torch.stack(weights, dim=0)
-            if gamma_reg[0]:
-                new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior0"][0], gamma_rate=self.struct_params[f"gamma_prior0"][1], max_iters=kappa_iter) + param_por * param
-            else:
-                new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, max_kappa=max_kappa[0], max_iters=kappa_iter) + param_por * param
-            assert_valid_dirichlet_param(new_param)
-            self.struct_params[f"alpha0"] = new_param
-            
-            if len(self.cluster_dims) > 1:
-                for depth in range(1, len(self.cluster_dims)):
-                    unique_rows, positions = get_unique_rows_and_positions(local_category_assignments[:, :depth])
-                    for row, pos in zip(unique_rows, positions):
-                        rev_idx  = torch.flip(row, dims=[0]).to(self.device)
-                        prior = self.SV[f"G{depth}"][tuple(rev_idx)]
-                        param = self.struct_params[f"alpha{depth}"][tuple(rev_idx)]
-                        same_parent_childs = local_category_assignments[pos]
-                        unique_childs, child_poses = get_unique_rows_and_positions(same_parent_childs[:, :depth+1])
-                        weights = []
-                        for child_row, child_pos in zip(unique_childs, child_poses):
-                            rev_child_idx = torch.flip(child_row, dims=[0]).to(self.device)
-                            weight = self.SV[f"G{depth+1}"][tuple(rev_child_idx)]
-                            weights.append(weight)
-                        weights = torch.stack(weights, dim=0)
-                        if gamma_reg[depth]:
-                            new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior{depth}"][0], gamma_rate=self.struct_params[f"gamma_prior{depth}"][1], max_iters=kappa_iter) + param_por * param
-                        else:
-                            new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, max_kappa=max_kappa[depth], max_iters=kappa_iter) + param_por * param
-                        assert_valid_dirichlet_param(new_param)
-                        self.struct_params[f"alpha{depth}"] = safe_update_scatter(
-                            self.struct_params[f"alpha{depth}"],
-                            rev_idx,
-                            new_param,
-                            dim=-1
-                        )
-            
-            unique_rows, positions = get_unique_rows_and_positions(local_category_assignments)
-            for row, pos in zip(unique_rows, positions):
-                rev_idx = torch.flip(row, dims=[0]).to(self.device)
-                doc_weights = doc_values["G"][pos]
-                prior = self.SV[f"G{len(self.param_dims)-1}"][tuple(rev_idx)]
-                param = self.struct_params[f"alpha{len(self.param_dims)-1}"][tuple(rev_idx)]
-                if gamma_reg[len(self.param_dims)-1]:
-                    new_alpha = (1 - param_por) * estimate_kappa_batched(doc_weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior{len(self.param_dims)-1}"][0], gamma_rate=self.struct_params[f"gamma_prior{len(self.param_dims)-1}"][1], max_iters=kappa_iter) + param_por * param
-                else:
-                    new_alpha = (1 - param_por) * estimate_kappa_batched(doc_weights, prior, param, max_kappa=max_kappa[len(self.param_dims)-1], max_iters=kappa_iter) + param_por * param
-                assert_valid_dirichlet_param(new_alpha)
+            #                 self.struct_params[f"alpha{depth}"] = safe_update_scatter(
+            #                     self.struct_params[f"alpha{depth}"],
+            #                     rev_idx,
+            #                     new_alpha,
+            #                     dim=-1
+            #                 )
 
-                self.struct_params[f"alpha{len(self.param_dims)-1}"] = safe_update_scatter(
-                    self.struct_params[f"alpha{len(self.param_dims)-1}"],
-                    rev_idx,
-                    new_alpha,
-                    dim=-1
-                )
+            # else:
+            #     prior = self.SV[f"G0"]
+            #     param = self.struct_params[f"alpha0"]
+            #     unique_childs, child_poses = get_unique_rows_and_positions(local_category_assignments[:, :1])
+            #     weights = []
+            #     for child_row, child_pos in zip(unique_childs, child_poses):
+            #         rev_child_idx = torch.flip(child_row, dims=[0]).to(self.device)
+            #         weight = self.SV[f"G1"][tuple(rev_child_idx)]
+            #         weights.append(weight)
+            #     weights = torch.stack(weights, dim=0)
+            #     if gamma_reg[0]:
+            #         new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior0"][0], gamma_rate=self.struct_params[f"gamma_prior0"][1], max_iters=kappa_iter) + param_por * param
+            #     else:
+            #         new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, max_kappa=max_kappa[0], max_iters=kappa_iter) + param_por * param
+            #     assert_valid_dirichlet_param(new_param)
+            #     self.struct_params[f"alpha0"] = new_param
+                
+            #     if len(self.cluster_dims) > 1:
+            #         for depth in range(1, len(self.cluster_dims)):
+            #             unique_rows, positions = get_unique_rows_and_positions(local_category_assignments[:, :depth])
+            #             for row, pos in zip(unique_rows, positions):
+            #                 rev_idx  = torch.flip(row, dims=[0]).to(self.device)
+            #                 prior = self.SV[f"G{depth}"][tuple(rev_idx)]
+            #                 param = self.struct_params[f"alpha{depth}"][tuple(rev_idx)]
+            #                 same_parent_childs = local_category_assignments[pos]
+            #                 unique_childs, child_poses = get_unique_rows_and_positions(same_parent_childs[:, :depth+1])
+            #                 weights = []
+            #                 for child_row, child_pos in zip(unique_childs, child_poses):
+            #                     rev_child_idx = torch.flip(child_row, dims=[0]).to(self.device)
+            #                     weight = self.SV[f"G{depth+1}"][tuple(rev_child_idx)]
+            #                     weights.append(weight)
+            #                 weights = torch.stack(weights, dim=0)
+            #                 if gamma_reg[depth]:
+            #                     new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior{depth}"][0], gamma_rate=self.struct_params[f"gamma_prior{depth}"][1], max_iters=kappa_iter) + param_por * param
+            #                 else:
+            #                     new_param = (1 - param_por) * estimate_kappa_batched(weights, prior, param, max_kappa=max_kappa[depth], max_iters=kappa_iter) + param_por * param
+            #                 assert_valid_dirichlet_param(new_param)
+            #                 self.struct_params[f"alpha{depth}"] = safe_update_scatter(
+            #                     self.struct_params[f"alpha{depth}"],
+            #                     rev_idx,
+            #                     new_param,
+            #                     dim=-1
+            #                 )
+                
+            #     unique_rows, positions = get_unique_rows_and_positions(local_category_assignments)
+            #     for row, pos in zip(unique_rows, positions):
+            #         rev_idx = torch.flip(row, dims=[0]).to(self.device)
+            #         doc_weights = doc_values["G"][pos]
+            #         prior = self.SV[f"G{len(self.param_dims)-1}"][tuple(rev_idx)]
+            #         param = self.struct_params[f"alpha{len(self.param_dims)-1}"][tuple(rev_idx)]
+            #         if gamma_reg[len(self.param_dims)-1]:
+            #             new_alpha = (1 - param_por) * estimate_kappa_batched(doc_weights, prior, param, gamma_shape=self.struct_params[f"gamma_prior{len(self.param_dims)-1}"][0], gamma_rate=self.struct_params[f"gamma_prior{len(self.param_dims)-1}"][1], max_iters=kappa_iter) + param_por * param
+            #         else:
+            #             new_alpha = (1 - param_por) * estimate_kappa_batched(doc_weights, prior, param, max_kappa=max_kappa[len(self.param_dims)-1], max_iters=kappa_iter) + param_por * param
+            #         assert_valid_dirichlet_param(new_alpha)
+
+            #         self.struct_params[f"alpha{len(self.param_dims)-1}"] = safe_update_scatter(
+            #             self.struct_params[f"alpha{len(self.param_dims)-1}"],
+            #             rev_idx,
+            #             new_alpha,
+            #             dim=-1
+            #         )
 
             # ------------------------
             # 9. Compute log-likelihood and update best state
