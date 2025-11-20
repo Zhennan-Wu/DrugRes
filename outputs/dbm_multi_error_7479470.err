@@ -1,0 +1,7 @@
+conda version 24.1.2 python 3.11.7 unloaded.
+conda version 24.1.2 python 3.11.7 loaded.
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2025-11-17T08:45:49.577] error: *** JOB 7479470 ON g29 CANCELLED AT 2025-11-17T08:45:49 DUE to SIGNAL Terminated ***
+[2025-11-17T08:45:49.577] error: *** STEP 7479470.0 ON g29 CANCELLED AT 2025-11-17T08:45:49 DUE to SIGNAL Terminated ***
+W1117 08:45:49.577000 728960 /N/slate/zwu1/.conda/envs/jax_env/lib/python3.12/site-packages/torch/distributed/elastic/agent/server/api.py:725] Received 15 death signal, shutting down workers
+W1117 08:45:49.577000 728961 /N/slate/zwu1/.conda/envs/jax_env/lib/python3.12/site-packages/torch/distributed/elastic/agent/server/api.py:725] Received 15 death signal, shutting down workers

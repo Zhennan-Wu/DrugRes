@@ -12,7 +12,7 @@
 #SBATCH --gpus-per-node=2
 #SBATCH --cpus-per-task=8
 #SBATCH --time=2-00:00:00
-#SBATCH --mem=200G
+#SBATCH --mem=300G
 #SBATCH -A r00939
 
 module load conda
@@ -39,5 +39,6 @@ srun torchrun \
     --distributed \
     --model_type multinomial \
     --learning_type unsupervised \
+    --epoch 10000 \
     --data_path /N/slate/zwu1/CancerDrugCell/cell_drug_response_samples.pt
 
